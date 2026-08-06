@@ -75,6 +75,22 @@ lgit attach --env PCX --use-remote
 
 The two flags are mutually exclusive.
 
+## Encryption modes
+
+Identity encryption remains the default:
+
+```bash
+lgit init --env PCX --encryption identity
+```
+
+Password encryption avoids copying an identity file between computers:
+
+```bash
+lgit init --env PCX --encryption password
+```
+
+Password-mode projects prompt when encrypting or decrypting. The password is never stored in the repository. For non-interactive automation, `LGIT_PASSWORD` is supported, but setting secrets through the process environment should be limited to controlled environments. Existing identity-mode repositories remain fully compatible.
+
 ## Environments
 
 ```bash

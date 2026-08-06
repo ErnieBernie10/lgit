@@ -13,13 +13,102 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"golang.org/x/term"
 )
 
-const ageFormat = "lgit-age-v1"
+const (
+	ageFormat         = "lgit-age-v1"
+	agePasswordFormat = "lgit-age-scrypt-v1"
+)
 
 type ageFormatFile struct {
 	Version    int    `json:"version"`
 	Encryption string `json:"encryption"`
+}
+
+func readAgeFormat(root string) (ageFormatFile, error) {
+	var f ageFormatFile
+	b, err := os.ReadFile(filepath.Join(root, ".lgit", "format.json"))
+	if err != nil {
+		return f, err
+	}
+	if err := json.Unmarshal(b, &f); err != nil {
+		return f, err
+	}
+	if f.Version != 1 {
+		return f, fmt.Errorf("unsupported lgit encryption format version %d", f.Version)
+	}
+	return f, nil
+}
+
+func (a App) readPassword(confirm bool) (string, error) {
+	if password := os.Getenv("LGIT_PASSWORD"); password != "" {
+		return password, nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("password required but stdin is not a terminal; set LGIT_PASSWORD for non-interactive use")
+	}
+	fmt.Fprint(a.Stderr, "Encryption password: ")
+	first, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(a.Stderr)
+	if err != nil {
+		return "", err
+	}
+	if len(first) == 0 {
+		return "", fmt.Errorf("password cannot be empty")
+	}
+	if confirm {
+		fmt.Fprint(a.Stderr, "Confirm password: ")
+		second, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(a.Stderr)
+		if err != nil {
+			return "", err
+		}
+		if !bytes.Equal(first, second) {
+			return "", fmt.Errorf("passwords do not match")
+		}
+	}
+	return string(first), nil
+}
+
+func (a App) encryptionRecipients(root string) ([]age.Recipient, error) {
+	f, err := readAgeFormat(root)
+	if err != nil {
+		return nil, err
+	}
+	if f.Encryption == agePasswordFormat {
+		password, err := a.readPassword(false)
+		if err != nil {
+			return nil, err
+		}
+		r, err := age.NewScryptRecipient(password)
+		if err != nil {
+			return nil, err
+		}
+		return []age.Recipient{r}, nil
+	}
+	if f.Encryption != ageFormat {
+		return nil, fmt.Errorf("unsupported encryption mode %q", f.Encryption)
+	}
+	return readRecipients(root)
+}
+
+func (a App) decryptionIdentity(root string) (age.Identity, error) {
+	f, err := readAgeFormat(root)
+	if err != nil {
+		return nil, err
+	}
+	if f.Encryption == agePasswordFormat {
+		password, err := a.readPassword(false)
+		if err != nil {
+			return nil, err
+		}
+		return age.NewScryptIdentity(password)
+	}
+	if f.Encryption != ageFormat {
+		return nil, fmt.Errorf("unsupported encryption mode %q", f.Encryption)
+	}
+	return a.loadIdentity()
 }
 
 func (a App) identityPath() (string, error) {
@@ -127,26 +216,41 @@ func (a App) key(root string, args []string) int {
 	}
 }
 
-func (a App) initEncryption(root string, p Project) error {
-	id, err := a.ensureIdentity()
-	if err != nil {
-		return err
-	}
+func (a App) initEncryption(root string, p Project, mode string) error {
 	meta := filepath.Join(root, ".lgit")
 	if err := os.MkdirAll(filepath.Join(meta, "store"), 0700); err != nil {
 		return err
 	}
-	f, _ := json.MarshalIndent(ageFormatFile{Version: 1, Encryption: ageFormat}, "", "  ")
+	format := ageFormat
+	var recipient string
+	if mode == "password" {
+		if _, err := a.readPassword(true); err != nil {
+			return err
+		}
+		format = agePasswordFormat
+	} else {
+		id, err := a.ensureIdentity()
+		if err != nil {
+			return err
+		}
+		recipient = id.Recipient().String() + "\n"
+	}
+	f, _ := json.MarshalIndent(ageFormatFile{Version: 1, Encryption: format}, "", "  ")
 	if err := os.WriteFile(filepath.Join(meta, "format.json"), append(f, '\n'), 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(meta, "recipients.txt"), []byte(id.Recipient().String()+"\n"), 0600); err != nil {
-		return err
+	metadata := []string{".lgit/format.json"}
+	if recipient != "" {
+		if err := os.WriteFile(filepath.Join(meta, "recipients.txt"), []byte(recipient), 0600); err != nil {
+			return err
+		}
+		metadata = append(metadata, ".lgit/recipients.txt")
 	}
 	if err := excludeLgit(root); err != nil {
 		return err
 	}
-	if c := a.run(root, p.GitDir, "add", "--force", ".lgit/format.json", ".lgit/recipients.txt"); c != 0 {
+	args := append([]string{"add", "--force"}, metadata...)
+	if c := a.run(root, p.GitDir, args...); c != 0 {
 		return fmt.Errorf("failed to stage encryption metadata")
 	}
 	return nil
@@ -232,7 +336,7 @@ func (a App) ageAdd(root string, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	rs, err := readRecipients(root)
+	rs, err := a.encryptionRecipients(root)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -294,7 +398,7 @@ func trackedStore(root string, p Project, ref string) ([]string, error) {
 }
 
 func (a App) materialize(root string, p Project) error {
-	id, err := a.loadIdentity()
+	id, err := a.decryptionIdentity(root)
 	if err != nil {
 		return err
 	}
@@ -344,7 +448,7 @@ func (a App) materialize(root string, p Project) error {
 }
 
 func (a App) plainConflicts(root string, p Project, ref string) ([]string, error) {
-	id, err := a.loadIdentity()
+	id, err := a.decryptionIdentity(root)
 	if err != nil {
 		return nil, err
 	}
@@ -490,7 +594,7 @@ func (a App) encryptionClean(root string, p Project) bool {
 	if err != nil {
 		return false
 	}
-	id, err := a.loadIdentity()
+	id, err := a.decryptionIdentity(root)
 	if err != nil {
 		return false
 	}
@@ -522,7 +626,7 @@ func (a App) ageStatus(root string, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	id, err := a.loadIdentity()
+	id, err := a.decryptionIdentity(root)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -557,7 +661,7 @@ func (a App) ageRestore(root string, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	id, err := a.loadIdentity()
+	id, err := a.decryptionIdentity(root)
 	if err != nil {
 		return a.fail(err)
 	}

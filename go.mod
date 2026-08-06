@@ -2,7 +2,10 @@ module github.com/ErnieBernie10/lgit
 
 go 1.26.5
 
-require filippo.io/age v1.3.1
+require (
+	filippo.io/age v1.3.1
+	golang.org/x/term v0.37.0
+)
 
 require (
 	filippo.io/hpke v0.4.0 // indirect
