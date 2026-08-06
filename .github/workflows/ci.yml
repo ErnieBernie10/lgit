@@ -28,7 +28,9 @@ jobs:
           go-version: '1.26.5'
       - run: python scripts/apply_age_encryption.py
         if: steps.migration.outputs.present == 'true'
-      - run: gofmt -w internal/lgit/app.go internal/lgit/age_store.go internal/lgit/age_store_test.go
+      - run: python scripts/fix_age_migration.py
+        if: steps.migration.outputs.present == 'true'
+      - run: gofmt -w internal/lgit/app.go internal/lgit/app_test.go internal/lgit/age_store.go internal/lgit/age_store_test.go
         if: steps.migration.outputs.present == 'true'
       - run: go mod tidy
         if: steps.migration.outputs.present == 'true'
