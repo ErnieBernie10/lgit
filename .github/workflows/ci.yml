@@ -44,6 +44,7 @@ jobs:
         run: |
           git config user.name "Arne Boedt"
           git config user.email "30663198+ErnieBernie10@users.noreply.github.com"
+          git checkout HEAD -- .github/workflows/ci.yml
           git add -A
           git commit -m "feat: encrypt companion files with age"
           git push
