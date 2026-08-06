@@ -79,7 +79,7 @@ func (a App) help() int {
 	fmt.Fprintln(a.Stdout, `lgit - Git for ignored project-local files
 
 Usage:
-  lgit init [--env NAME] [--new-project]
+  lgit init [--env NAME] [--new-project] [--encryption identity|password]
   lgit attach --env NAME [--project KEY] [--keep-local|--use-remote]
   lgit remote set URL
   lgit env current|branch|list|create NAME|switch NAME
@@ -103,7 +103,7 @@ func (a App) registry() (Registry, error) {
 }
 
 func (a App) init(root string, args []string) int {
-	env, newProject, err := parseInit(args)
+	env, newProject, encryption, err := parseInit(args)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -159,7 +159,7 @@ func (a App) init(root string, args []string) int {
 			return c
 		}
 	}
-	if err := a.initEncryption(root, p); err != nil {
+	if err := a.initEncryption(root, p, encryption); err != nil {
 		return a.fail(err)
 	}
 	r.Projects[root] = p
@@ -171,32 +171,42 @@ func (a App) init(root string, args []string) int {
 	return 0
 }
 
-func parseInit(args []string) (string, bool, error) {
+func parseInit(args []string) (string, bool, string, error) {
 	env := ""
 	newProject := false
+	encryption := "identity"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--env":
 			i++
 			if i >= len(args) {
-				return "", false, fmt.Errorf("--env requires a name")
+				return "", false, "", fmt.Errorf("--env requires a name")
 			}
 			env = args[i]
 		case "--new-project":
 			newProject = true
+		case "--encryption":
+			i++
+			if i >= len(args) {
+				return "", false, "", fmt.Errorf("--encryption requires identity or password")
+			}
+			encryption = strings.ToLower(args[i])
+			if encryption != "identity" && encryption != "password" {
+				return "", false, "", fmt.Errorf("--encryption must be identity or password")
+			}
 		default:
-			return "", false, fmt.Errorf("usage: lgit init [--env NAME] [--new-project]")
+			return "", false, "", fmt.Errorf("usage: lgit init [--env NAME] [--new-project] [--encryption identity|password]")
 		}
 	}
 	if env == "" {
 		h, e := os.Hostname()
 		if e != nil {
-			return "", false, e
+			return "", false, "", e
 		}
 		env = h
 	}
 	env, e := validateName(env)
-	return env, newProject, e
+	return env, newProject, encryption, e
 }
 
 type attachOptions struct {
