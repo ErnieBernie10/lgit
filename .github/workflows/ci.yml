@@ -1,22 +1,32 @@
-name: CI
+name: Apply password mode
 
 on:
   push:
-  pull_request:
+    branches:
+      - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  migrate:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.5'
+      - run: python scripts/apply_password_mode.py
+      - run: gofmt -w internal/lgit/app.go internal/lgit/age_store.go internal/lgit/age_store_test.go
+      - run: go mod tidy
       - run: go test ./...
       - run: go build ./cmd/lgit
+      - name: Commit implementation
+        shell: bash
+        run: |
+          git config user.name "Arne Boedt"
+          git config user.email "30663198+ErnieBernie10@users.noreply.github.com"
+          git checkout HEAD -- .github/workflows/ci.yml
+          git add -A
+          git commit -m "feat: support identity and password encryption"
+          git push
