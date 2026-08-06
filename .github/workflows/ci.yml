@@ -2,26 +2,43 @@ name: Apply age encryption
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   migrate:
-    if: ${{ hashFiles('scripts/apply_age_encryption.py') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check migration script
+        id: migration
+        shell: bash
+        run: |
+          if [ -f scripts/apply_age_encryption.py ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-go@v5
+        if: steps.migration.outputs.present == 'true'
         with:
           go-version: '1.26.5'
       - run: python scripts/apply_age_encryption.py
+        if: steps.migration.outputs.present == 'true'
       - run: gofmt -w internal/lgit/app.go internal/lgit/age_store.go internal/lgit/age_store_test.go
+        if: steps.migration.outputs.present == 'true'
       - run: go mod tidy
+        if: steps.migration.outputs.present == 'true'
       - run: go test ./...
+        if: steps.migration.outputs.present == 'true'
       - run: go build ./cmd/lgit
+        if: steps.migration.outputs.present == 'true'
       - name: Commit migration
+        if: steps.migration.outputs.present == 'true'
+        shell: bash
         run: |
           git config user.name "Arne Boedt"
           git config user.email "30663198+ErnieBernie10@users.noreply.github.com"
