@@ -64,6 +64,16 @@ func TestAttachDiscoversProjectByFolderNameAcrossPaths(t *testing.T) {
 	appRun(t, App{}, original, "push")
 
 	data2 := filepath.Join(t.TempDir(), "data2")
+	if err := os.MkdirAll(data2, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(filepath.Join(data1, "age-identity.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data2, "age-identity.txt"), key, 0600); err != nil {
+		t.Fatal(err)
+	}
 	second := filepath.Join(t.TempDir(), "Booking")
 	os.MkdirAll(second, 0700)
 	initMain(t, second)
@@ -126,6 +136,16 @@ func fixtureRemote(t *testing.T) (string, string, App) {
 	appRun(t, App{}, original, "commit", "-m", "env")
 	appRun(t, App{}, original, "push")
 	d2 := filepath.Join(t.TempDir(), "d2")
+	if err := os.MkdirAll(d2, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(filepath.Join(d1, "age-identity.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d2, "age-identity.txt"), key, 0600); err != nil {
+		t.Fatal(err)
+	}
 	second := filepath.Join(t.TempDir(), "Booking")
 	os.MkdirAll(second, 0700)
 	initMain(t, second)

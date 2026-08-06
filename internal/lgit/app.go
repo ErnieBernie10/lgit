@@ -23,7 +23,7 @@ func (a App) Run(cwd string, args []string) int {
 		a.Stderr = os.Stderr
 	}
 	root, err := gitRoot(cwd)
-	if err != nil && len(args) > 0 && args[0] != "list" && args[0] != "data-dir" && args[0] != "help" && args[0] != "--help" {
+	if err != nil && len(args) > 0 && args[0] != "list" && args[0] != "data-dir" && args[0] != "key" && args[0] != "help" && args[0] != "--help" {
 		return a.fail(err)
 	}
 	if root == "" {
@@ -63,9 +63,14 @@ func (a App) Run(cwd string, args []string) int {
 		return a.push(root, args[1:])
 	case "pull":
 		return a.pull(root, args[1:])
-	}
-	if args[0] == "add" && !hasForceFlag(args[1:]) {
-		args = append([]string{"add", "--force"}, args[1:]...)
+	case "add":
+		return a.ageAdd(root, args[1:])
+	case "status":
+		return a.ageStatus(root, args[1:])
+	case "restore":
+		return a.ageRestore(root, args[1:])
+	case "key":
+		return a.key(root, args[1:])
 	}
 	return a.delegate(root, args)
 }
@@ -78,6 +83,8 @@ Usage:
   lgit attach --env NAME [--project KEY] [--keep-local|--use-remote]
   lgit remote set URL
   lgit env current|branch|list|create NAME|switch NAME
+  lgit key generate|show|export FILE|import FILE
+  lgit add PATH... | lgit status | lgit restore PATH...
   lgit push | lgit pull
   lgit <git command>`)
 	return 0
@@ -151,6 +158,9 @@ func (a App) init(root string, args []string) int {
 		if c := a.configureRemote(root, p, r.Remote); c != 0 {
 			return c
 		}
+	}
+	if err := a.initEncryption(root, p); err != nil {
+		return a.fail(err)
 	}
 	r.Projects[root] = p
 	if err := SaveRegistry(rp, r); err != nil {
@@ -229,7 +239,7 @@ func parseAttach(args []string) (attachOptions, error) {
 	return o, e
 }
 
-func (a App) attach(root string, args []string) int {
+func (a App) attachLegacy(root string, args []string) int {
 	o, err := parseAttach(args)
 	if err != nil {
 		return a.fail(err)
@@ -526,7 +536,7 @@ func (a App) envCreate(root string, p Project, name string) int {
 	}
 	return a.setEnvironment(root, p, name)
 }
-func (a App) envSwitch(root string, p Project, name string) int {
+func (a App) envSwitchLegacy(root string, p Project, name string) int {
 	name, e := validateName(name)
 	if e != nil {
 		return a.fail(e)
@@ -547,7 +557,7 @@ func (a App) envSwitch(root string, p Project, name string) int {
 	}
 	return a.setEnvironment(root, p, name)
 }
-func (a App) clean(root string, p Project) bool {
+func (a App) cleanLegacy(root string, p Project) bool {
 	o, e := gitOutput(root, p.GitDir, "status", "--porcelain")
 	return e == nil && strings.TrimSpace(o) == ""
 }
@@ -621,7 +631,7 @@ func (a App) push(root string, args []string) int {
 	x := append([]string{"push", "-u", "origin", "HEAD:refs/heads/" + remoteBranch(p, p.Environment)}, args...)
 	return a.run(root, p.GitDir, x...)
 }
-func (a App) pull(root string, args []string) int {
+func (a App) pullLegacy(root string, args []string) int {
 	p, e := a.lookup(root)
 	if e != nil {
 		return a.fail(e)

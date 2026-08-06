@@ -1,6 +1,6 @@
 # lgit
 
-`lgit` tracks ignored, project-local files with Git while keeping its Git metadata outside the normal project repository.
+`lgit` tracks ignored, project-local files with Git while keeping plaintext in the project folder and age-encrypted payloads in Git and on the remote.
 
 ## Model
 
@@ -131,3 +131,19 @@ Set `LGIT_DATA_DIR` to override the platform user configuration directory.
 ## License
 
 MIT
+
+
+## Encryption
+
+Encryption is enabled automatically for newly initialized projects. `lgit add` encrypts plaintext files with age before staging them. The project folder keeps the plaintext files applications need, while Git stores `.lgit/store/...age` ciphertext plus public metadata.
+
+The private age identity is stored outside repositories in the lgit data directory. To use another computer:
+
+```bash
+lgit key export identity.txt
+# transfer identity.txt securely
+lgit key import identity.txt
+lgit attach --env pcx
+```
+
+The remote can still see branch names, commit metadata, original relative paths encoded in the encrypted store path, and approximate sizes, but it cannot read file contents without the private identity.
