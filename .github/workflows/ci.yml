@@ -16,6 +16,7 @@ jobs:
         with:
           go-version: '1.26.5'
       - run: python scripts/implement_storage_plan.py
+      - run: python scripts/fix_storage_plan.py
       - run: gofmt -w internal/lgit/*.go
       - run: go mod tidy
       - run: go test ./...
