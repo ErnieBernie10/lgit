@@ -26,7 +26,7 @@ type ageFormatFile struct {
 	Encryption string `json:"encryption"`
 }
 
-func readAgeFormat(root string) (ageFormatFile, error) {
+func readAgeFormatLegacyOnly(root string) (ageFormatFile, error) {
 	var f ageFormatFile
 	b, err := os.ReadFile(filepath.Join(root, ".lgit", "format.json"))
 	if err != nil {
@@ -72,7 +72,14 @@ func (a App) readPassword(confirm bool) (string, error) {
 }
 
 func (a App) encryptionRecipients(root string) ([]age.Recipient, error) {
-	f, err := readAgeFormat(root)
+	c, cerr := loadStorageConfig(root)
+	if cerr == nil {
+		if c.Encryption.Mode == "password" {
+			return []age.Recipient{}, fmt.Errorf("password recipients are handled by storage policy")
+		}
+		return readRecipients(root)
+	}
+	f, err := readAgeFormatLegacyOnly(root)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +101,7 @@ func (a App) encryptionRecipients(root string) ([]age.Recipient, error) {
 }
 
 func (a App) decryptionIdentity(root string) (age.Identity, error) {
-	f, err := readAgeFormat(root)
+	f, err := readAgeFormatLegacyOnly(root)
 	if err != nil {
 		return nil, err
 	}

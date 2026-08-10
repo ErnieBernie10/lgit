@@ -22,12 +22,10 @@ func (a App) Run(cwd string, args []string) int {
 	if a.Stderr == nil {
 		a.Stderr = os.Stderr
 	}
-	root, err := gitRoot(cwd)
-	if err != nil && len(args) > 0 && args[0] != "list" && args[0] != "data-dir" && args[0] != "key" && args[0] != "help" && args[0] != "--help" {
-		return a.fail(err)
-	}
-	if root == "" {
-		root, _ = filepath.Abs(cwd)
+	explicit := ""
+	if len(args) >= 2 && args[0] == "--root" {
+		explicit = args[1]
+		args = args[2:]
 	}
 	if len(args) == 0 {
 		return a.help()
@@ -45,16 +43,28 @@ func (a App) Run(cwd string, args []string) int {
 		}
 		fmt.Fprintln(a.Stdout, d)
 		return 0
-	case "init":
-		return a.init(root, args[1:])
-	case "attach":
-		return a.attach(root, args[1:])
 	case "list":
 		return a.list()
+	case "key":
+		root, _ := canonicalPath(cwd)
+		return a.key(root, args[1:])
+	case "init":
+		return a.initV2(cwd, explicit, args[1:])
+	}
+	allowUnregistered := args[0] == "attach" || (args[0] == "remote" && len(args) > 1 && args[1] == "set")
+	root, err := a.resolveRoot(cwd, explicit, allowUnregistered)
+	if err != nil {
+		return a.fail(err)
+	}
+	switch args[0] {
+	case "attach":
+		return a.attachMixed(root, args[1:])
 	case "remove":
 		return a.remove(root)
 	case "env":
 		return a.env(root, args[1:])
+	case "storage":
+		return a.storageCommand(root, args[1:])
 	case "remote":
 		if len(args) > 1 && args[1] == "set" {
 			return a.remoteSet(root, args[2:])
@@ -62,30 +72,37 @@ func (a App) Run(cwd string, args []string) int {
 	case "push":
 		return a.push(root, args[1:])
 	case "pull":
-		return a.pull(root, args[1:])
+		return a.pullMixed(root, args[1:])
 	case "add":
-		return a.ageAdd(root, args[1:])
+		return a.mixedAdd(root, args[1:])
 	case "status":
-		return a.ageStatus(root, args[1:])
+		return a.mixedStatus(root, args[1:])
+	case "diff":
+		return a.mixedDiff(root, args[1:])
 	case "restore":
-		return a.ageRestore(root, args[1:])
-	case "key":
-		return a.key(root, args[1:])
+		return a.mixedRestore(root, args[1:])
+	case "git":
+		if len(args) == 1 {
+			return a.fail(fmt.Errorf("usage: lgit git <git command>"))
+		}
+		return a.delegate(root, args[1:])
 	}
 	return a.delegate(root, args)
 }
 
 func (a App) help() int {
-	fmt.Fprintln(a.Stdout, `lgit - Git for ignored project-local files
+	fmt.Fprintln(a.Stdout, `lgit - Git-backed storage for local project files and dotfiles
 
 Usage:
-  lgit init [--env NAME] [--new-project] [--encryption identity|password]
-  lgit attach --env NAME [--project KEY] [--keep-local|--use-remote]
+  lgit init [--root PATH] [--env NAME] [--new-project] [--default plain|age] [--encryption identity|password]
+  lgit [--root PATH] attach --env NAME [--project KEY] [--keep-local|--use-remote]
+  lgit storage show PATH | set PATH plain|age | unset PATH | default [plain|age]
   lgit remote set URL
   lgit env current|branch|list|create NAME|switch NAME
   lgit key generate|show|export FILE|import FILE
-  lgit add PATH... | lgit status | lgit restore PATH...
+  lgit add PATH... | lgit status | lgit diff [PATH...] | lgit restore PATH...
   lgit push | lgit pull
+  lgit git <raw git command>
   lgit <git command>`)
 	return 0
 }
@@ -507,7 +524,7 @@ func (a App) env(root string, args []string) int {
 		if len(args) != 2 {
 			return a.fail(fmt.Errorf("usage: lgit env switch NAME"))
 		}
-		return a.envSwitch(root, p, args[1])
+		return a.envSwitchMixed(root, p, args[1])
 	}
 	return a.fail(fmt.Errorf("unknown env command"))
 }
@@ -613,6 +630,7 @@ func (a App) remoteSet(root string, args []string) int {
 }
 
 func (a App) configureRemote(root string, p Project, url string) int {
+	_ = a.run(root, p.GitDir, "config", "core.autocrlf", "false")
 	if _, e := gitOutput(root, p.GitDir, "remote", "get-url", "origin"); e == nil {
 		if c := a.run(root, p.GitDir, "remote", "set-url", "origin", url); c != 0 {
 			return c
@@ -690,11 +708,15 @@ func (a App) lookup(root string) (Project, error) {
 	if e != nil {
 		return Project{}, e
 	}
-	p, ok := r.Projects[root]
-	if !ok {
-		return Project{}, fmt.Errorf("project is not initialized; run 'lgit init' or 'lgit attach --env NAME'")
+	if p, ok := r.Projects[root]; ok {
+		return p, nil
 	}
-	return p, nil
+	for candidate, p := range r.Projects {
+		if pathKey(candidate) == pathKey(root) {
+			return p, nil
+		}
+	}
+	return Project{}, fmt.Errorf("project is not initialized; run 'lgit init' or 'lgit attach --env NAME'")
 }
 func (a App) list() int {
 	r, e := a.registry()
@@ -774,4 +796,302 @@ func validateName(s string) (string, error) {
 		return "", fmt.Errorf("invalid environment name")
 	}
 	return s, nil
+}
+
+func parseInitV2(args []string) (env string, newProject bool, encryption string, backend StorageBackend, rootOverride string, err error) {
+	encryption = "identity"
+	backend = StorageAge
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--env":
+			i++
+			if i >= len(args) {
+				err = fmt.Errorf("--env requires a name")
+				return
+			}
+			env = args[i]
+		case "--new-project":
+			newProject = true
+		case "--encryption":
+			i++
+			if i >= len(args) {
+				err = fmt.Errorf("--encryption requires identity or password")
+				return
+			}
+			encryption = strings.ToLower(args[i])
+			if encryption != "identity" && encryption != "password" {
+				err = fmt.Errorf("--encryption must be identity or password")
+				return
+			}
+		case "--default":
+			i++
+			if i >= len(args) {
+				err = fmt.Errorf("--default requires plain or age")
+				return
+			}
+			backend = StorageBackend(strings.ToLower(args[i]))
+			if !validBackend(backend) {
+				err = fmt.Errorf("unsupported storage backend %q", backend)
+				return
+			}
+		case "--root":
+			i++
+			if i >= len(args) {
+				err = fmt.Errorf("--root requires a path")
+				return
+			}
+			rootOverride = args[i]
+		default:
+			err = fmt.Errorf("usage: lgit init [--root PATH] [--env NAME] [--new-project] [--default plain|age] [--encryption identity|password]")
+			return
+		}
+	}
+	if env == "" {
+		h, e := os.Hostname()
+		if e != nil {
+			err = e
+			return
+		}
+		env = h
+	}
+	env, err = validateName(env)
+	return
+}
+
+func (a App) initV2(cwd, explicit string, args []string) int {
+	env, newProject, encryption, backend, rootArg, err := parseInitV2(args)
+	if err != nil {
+		return a.fail(err)
+	}
+	if explicit != "" && rootArg != "" {
+		return a.fail(fmt.Errorf("specify --root only once"))
+	}
+	if rootArg != "" {
+		explicit = rootArg
+	}
+	var root string
+	standalone := explicit != ""
+	if explicit != "" {
+		root, err = canonicalPath(explicit)
+	} else {
+		root, err = gitRoot(cwd)
+	}
+	if err != nil {
+		return a.fail(err)
+	}
+	if !standalone {
+		standalone = !isGitWorkTreeRoot(root)
+	}
+	d, rp, err := a.paths()
+	if err != nil {
+		return a.fail(err)
+	}
+	r, err := LoadRegistry(rp)
+	if err != nil {
+		return a.fail(err)
+	}
+	for candidate, p := range r.Projects {
+		if pathKey(candidate) == pathKey(root) {
+			fmt.Fprintf(a.Stdout, "already initialized: %s (%s)\n", p.ID, p.Environment)
+			return 0
+		}
+	}
+	base := slugify(filepath.Base(root))
+	if base == "" {
+		return a.fail(fmt.Errorf("root folder name cannot be converted to a project slug"))
+	}
+	if r.Remote != "" && !newProject {
+		matches, err := discover(r.Remote, base, "")
+		if err != nil {
+			return a.fail(err)
+		}
+		if len(uniqueProjects(matches)) > 0 {
+			return a.fail(fmt.Errorf("remote project %q already exists; attach it or use --new-project", base))
+		}
+	}
+	id, err := newID()
+	if err != nil {
+		return a.fail(err)
+	}
+	p := Project{ID: id, Slug: base + "-" + id[:8], Environment: env, GitDir: filepath.Join(d, "repos", id), Standalone: standalone}
+	if err := os.MkdirAll(p.GitDir, 0700); err != nil {
+		return a.fail(err)
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(p.GitDir)
+		}
+	}()
+	if code := a.exec(root, "git", "init", "--bare", p.GitDir); code != 0 {
+		return code
+	}
+	if code := a.run(root, p.GitDir, "symbolic-ref", "HEAD", "refs/heads/env/"+env); code != 0 {
+		return code
+	}
+	_ = a.run(root, p.GitDir, "config", "status.showUntrackedFiles", "no")
+	_ = a.run(root, p.GitDir, "config", "core.autocrlf", "false")
+	copyIdentity(root, a, p)
+	if r.Remote != "" {
+		if code := a.configureRemote(root, p, r.Remote); code != 0 {
+			return code
+		}
+	}
+	if err := a.initStorage(root, p, backend, encryption); err != nil {
+		return a.fail(err)
+	}
+	r.Projects[root] = p
+	if err := SaveRegistry(rp, r); err != nil {
+		return a.fail(err)
+	}
+	cleanup = false
+	fmt.Fprintf(a.Stdout, "initialized %s environment %s (%s default)\n", p.Slug, env, backend)
+	return 0
+}
+
+func (a App) attachMixed(root string, args []string) int {
+	o, err := parseAttach(args)
+	if err != nil {
+		return a.fail(err)
+	}
+	d, rp, err := a.paths()
+	if err != nil {
+		return a.fail(err)
+	}
+	r, err := LoadRegistry(rp)
+	if err != nil {
+		return a.fail(err)
+	}
+	for candidate := range r.Projects {
+		if pathKey(candidate) == pathKey(root) {
+			return a.fail(fmt.Errorf("project is already initialized"))
+		}
+	}
+	if r.Remote == "" {
+		return a.fail(fmt.Errorf("shared remote is not configured; run 'lgit remote set URL'"))
+	}
+	base := slugify(filepath.Base(root))
+	matches, err := discover(r.Remote, base, o.env)
+	if err != nil {
+		return a.fail(err)
+	}
+	key, err := resolveProject(matches, o.project)
+	if err != nil {
+		return a.fail(err)
+	}
+	idpart := strings.TrimPrefix(key, base+"-")
+	if idpart == key || idpart == "" {
+		idpart, _ = newID()
+	}
+	p := Project{ID: idpart, Slug: key, Environment: o.env, GitDir: filepath.Join(d, "repos", idpart+"-"+fmt.Sprint(time.Now().UnixNano())), Standalone: !isGitWorkTreeRoot(root)}
+	if err := os.MkdirAll(p.GitDir, 0700); err != nil {
+		return a.fail(err)
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(p.GitDir)
+		}
+	}()
+	if code := a.exec(root, "git", "init", "--bare", p.GitDir); code != 0 {
+		return code
+	}
+	_ = a.run(root, p.GitDir, "config", "core.autocrlf", "false")
+	copyIdentity(root, a, p)
+	if code := a.configureRemote(root, p, r.Remote); code != 0 {
+		return code
+	}
+	if code := a.run(root, p.GitDir, "fetch", "origin"); code != 0 {
+		return code
+	}
+	ref := "refs/remotes/origin/envs/" + o.env
+	logical, err := logicalTrackedAt(root, p, ref)
+	if err != nil {
+		return a.fail(err)
+	}
+	if !p.Standalone {
+		var owned []string
+		for path := range logical {
+			if a.mainOwns(root, p, path) {
+				owned = append(owned, path)
+			}
+		}
+		if len(owned) > 0 {
+			sort.Strings(owned)
+			return a.fail(fmt.Errorf("main repository already tracks: %s", strings.Join(owned, ", ")))
+		}
+	}
+	conflicts, err := a.conflictsAt(root, p, ref)
+	if err != nil {
+		return a.fail(err)
+	}
+	if len(conflicts) > 0 && !o.keepLocal && !o.useRemote {
+		return a.fail(fmt.Errorf("local files differ from remote: %s; use --keep-local or --use-remote", strings.Join(conflicts, ", ")))
+	}
+	saved := map[string][]byte{}
+	for path := range logical {
+		full := filepath.Join(root, filepath.FromSlash(path))
+		if b, e := os.ReadFile(full); e == nil {
+			saved[path] = b
+		}
+	}
+	if o.useRemote && len(conflicts) > 0 {
+		if err := backupFiles(d, p.ID, root, conflicts); err != nil {
+			return a.fail(err)
+		}
+	}
+	// Remove target plain files before checkout so ignored/untracked local files cannot be overwritten silently.
+	for path, b := range logical {
+		if b == StoragePlain {
+			_ = os.Remove(filepath.Join(root, filepath.FromSlash(path)))
+		}
+	}
+	if code := a.run(root, p.GitDir, "checkout", "-b", "env/"+o.env, ref); code != 0 {
+		for path, b := range saved {
+			dst := filepath.Join(root, filepath.FromSlash(path))
+			_ = os.MkdirAll(filepath.Dir(dst), 0700)
+			_ = os.WriteFile(dst, b, 0600)
+		}
+		return code
+	}
+	if !p.Standalone {
+		if err := excludeLgitV2(root); err != nil {
+			return a.fail(err)
+		}
+	}
+	if err := a.mixedMaterialize(root, p); err != nil {
+		return a.fail(err)
+	}
+	if o.keepLocal {
+		for path, b := range saved {
+			dst := filepath.Join(root, filepath.FromSlash(path))
+			_ = os.MkdirAll(filepath.Dir(dst), 0700)
+			if err := os.WriteFile(dst, b, 0600); err != nil {
+				return a.fail(err)
+			}
+		}
+	}
+	_ = a.run(root, p.GitDir, "config", "status.showUntrackedFiles", "no")
+	r.Projects[root] = p
+	if err := SaveRegistry(rp, r); err != nil {
+		return a.fail(err)
+	}
+	cleanup = false
+	fmt.Fprintf(a.Stdout, "attached %s environment %s\n", key, o.env)
+	return 0
+}
+
+func excludeLgitV2(root string) error {
+	p := filepath.Join(root, ".git", "info", "exclude")
+	b, _ := os.ReadFile(p)
+	if strings.Contains(string(b), "\n.lgit/\n") || strings.HasSuffix(string(b), ".lgit/\n") {
+		return nil
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.WriteString(f, "\n.lgit/\n")
+	return err
 }
