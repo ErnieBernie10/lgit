@@ -711,8 +711,16 @@ func (a App) lookup(root string) (Project, error) {
 	if p, ok := r.Projects[root]; ok {
 		return p, nil
 	}
+	canonicalRoot, err := canonicalPath(root)
+	if err != nil {
+		canonicalRoot = filepath.Clean(root)
+	}
 	for candidate, p := range r.Projects {
-		if pathKey(candidate) == pathKey(root) {
+		canonicalCandidate, err := canonicalPath(candidate)
+		if err != nil {
+			canonicalCandidate = filepath.Clean(candidate)
+		}
+		if pathKey(canonicalCandidate) == pathKey(canonicalRoot) {
 			return p, nil
 		}
 	}
