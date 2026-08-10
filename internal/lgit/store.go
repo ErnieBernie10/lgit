@@ -14,6 +14,7 @@ type Project struct {
 	GitDir      string `json:"gitDir"`
 	Slug        string `json:"slug"`
 	Environment string `json:"environment"`
+	Standalone  bool   `json:"standalone,omitempty"`
 }
 type Registry struct {
 	Remote   string             `json:"remote,omitempty"`
