@@ -25,7 +25,11 @@ func canonicalPath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Clean(p), nil
+	p = filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = filepath.Clean(resolved)
+	}
+	return p, nil
 }
 
 func pathKey(path string) string {
@@ -55,7 +59,11 @@ func (a App) nearestRegisteredRoot(cwd string) (string, bool, error) {
 	}
 	best := ""
 	for candidate := range r.Projects {
-		if containsPath(candidate, cwd) && len(pathKey(candidate)) > len(pathKey(best)) {
+		canonicalCandidate, err := canonicalPath(candidate)
+		if err != nil {
+			canonicalCandidate = candidate
+		}
+		if containsPath(canonicalCandidate, cwd) && len(pathKey(canonicalCandidate)) > len(pathKey(best)) {
 			best = candidate
 		}
 	}
@@ -76,7 +84,8 @@ func (a App) resolveRoot(cwd, explicit string, allowUnregistered bool) (string, 
 			return "", err
 		}
 		for candidate := range r.Projects {
-			if pathKey(candidate) == pathKey(root) {
+			canonicalCandidate, err := canonicalPath(candidate)
+			if err == nil && pathKey(canonicalCandidate) == pathKey(root) {
 				return candidate, nil
 			}
 		}
@@ -100,11 +109,16 @@ func isGitWorkTreeRoot(root string) bool {
 		return false
 	}
 	got, err := canonicalPath(strings.TrimSpace(string(b)))
-	return err == nil && pathKey(got) == pathKey(root)
+	want, werr := canonicalPath(root)
+	return err == nil && werr == nil && pathKey(got) == pathKey(want)
 }
 
 func (a App) childRoot(root, path string) (string, bool, error) {
 	r, err := a.registry()
+	if err != nil {
+		return "", false, err
+	}
+	canonicalRoot, err := canonicalPath(root)
 	if err != nil {
 		return "", false, err
 	}
@@ -114,11 +128,15 @@ func (a App) childRoot(root, path string) (string, bool, error) {
 	}
 	best := ""
 	for candidate := range r.Projects {
-		if pathKey(candidate) == pathKey(root) {
+		canonicalCandidate, err := canonicalPath(candidate)
+		if err != nil {
 			continue
 		}
-		if containsPath(root, candidate) && containsPath(candidate, path) {
-			if best == "" || len(candidate) > len(best) {
+		if pathKey(canonicalCandidate) == pathKey(canonicalRoot) {
+			continue
+		}
+		if containsPath(canonicalRoot, canonicalCandidate) && containsPath(canonicalCandidate, path) {
+			if best == "" || len(canonicalCandidate) > len(best) {
 				best = candidate
 			}
 		}
@@ -127,11 +145,18 @@ func (a App) childRoot(root, path string) (string, bool, error) {
 }
 
 func nestedGitRoot(root, path string) (string, bool) {
-	cur := filepath.Clean(path)
+	canonicalRoot, err := canonicalPath(root)
+	if err != nil {
+		canonicalRoot = filepath.Clean(root)
+	}
+	cur, err := canonicalPath(path)
+	if err != nil {
+		cur = filepath.Clean(path)
+	}
 	if info, err := os.Stat(cur); err == nil && !info.IsDir() {
 		cur = filepath.Dir(cur)
 	}
-	for containsPath(root, cur) && pathKey(cur) != pathKey(root) {
+	for containsPath(canonicalRoot, cur) && pathKey(cur) != pathKey(canonicalRoot) {
 		if _, err := os.Stat(filepath.Join(cur, ".git")); err == nil {
 			return cur, true
 		}
