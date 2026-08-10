@@ -1,21 +1,16 @@
 # lgit
 
-`lgit` tracks ignored, project-local files with Git while keeping plaintext in the project folder and age-encrypted payloads in Git and on the remote.
+`lgit` is a Git-backed companion repository for files that should not live in a project's normal Git repository. It keeps the real files in their normal locations while storing version history in an external Git directory.
+
+It supports both ordinary Git storage and age-encrypted storage on a per-path basis, and it can also manage standalone roots such as your home directory for dotfiles.
 
 ## Model
 
-- One external local companion repository per project checkout.
-- One optional shared remote repository for all projects.
-- One namespaced branch per project and environment.
-- The current environment's files live directly in the normal project folder; there is no copied-file synchronization layer.
-
-Remote branches look like:
-
-```text
-projects/booking-a43f91d2/envs/pcx
-projects/booking-a43f91d2/envs/pcy
-projects/amend-82d71c0a/envs/pcx
-```
+- Git remains authoritative for tracked files, commits, branches, refs, history and remotes.
+- One external local companion Git repository exists per lgit root.
+- One optional shared remote can contain many projects.
+- Project environments use namespaced remote branches such as `projects/booking-a43f91d2/envs/pcx`.
+- `lgit` translates logical paths to their physical Git representation only when a storage backend requires it.
 
 ## Install
 
@@ -23,11 +18,13 @@ projects/amend-82d71c0a/envs/pcx
 go install github.com/ErnieBernie10/lgit/cmd/lgit@latest
 ```
 
-## First computer
+## Project-local files
+
+The default storage backend is `age`, preserving the original lgit use case:
 
 ```bash
 cd Booking
-lgit init --env PCX
+lgit init --env PCX --encryption password
 lgit remote set git@github.com:you/lgit-data.git
 
 lgit add .env docker-compose.override.yml
@@ -35,61 +32,119 @@ lgit commit -m "Add PCX environment"
 lgit push
 ```
 
-`lgit add` force-adds ignored files. Other untracked project files remain hidden from `lgit status` by default.
+The normal project contains the plaintext `.env`; the companion Git tree stores `.lgit/store/.env.age`.
 
-## Attach on another computer
-
-The main repository can be cloned into any absolute path. `lgit` identifies the remote project from the main Git work-tree folder name.
-
-```bash
-git clone git@github.com:company/booking.git
-cd Booking
-
-lgit remote set git@github.com:you/lgit-data.git
-lgit attach --env PCX
-```
-
-`Booking`, `/home/user/code/Booking`, and `D:\Work\Booking` all resolve to the slug `booking`.
-
-When more than one remote project matches the same folder name, select one explicitly:
-
-```bash
-lgit attach --project booking-a43f91d2 --env PCX
-```
-
-### Existing local files
-
-Attachment aborts when a remote-tracked file already exists locally with different contents.
-
-Preserve the local versions as uncommitted companion changes:
-
-```bash
-lgit attach --env PCX --keep-local
-```
-
-Replace them with the remote versions and back up the local files under the lgit data directory:
-
-```bash
-lgit attach --env PCX --use-remote
-```
-
-The two flags are mutually exclusive.
-
-## Encryption modes
-
-Identity encryption remains the default:
+Identity encryption remains available and is the default encryption mode:
 
 ```bash
 lgit init --env PCX --encryption identity
 ```
 
-Password encryption avoids copying an identity file between computers:
+## Storage backends
+
+There are currently two storage backends:
+
+- `plain`: the logical path is stored as a normal Git blob.
+- `age`: the logical plaintext stays in the work tree while Git stores an age-encrypted blob under `.lgit/store`.
+
+The storage configuration is intentionally small:
+
+```toml
+version = 1
+default = "plain"
+
+[encryption]
+mode = "password"
+
+[files]
+".npmrc" = "age"
+".ssh/config" = "age"
+```
+
+Git remains the source of truth for what is tracked. `storage.toml` only controls how a path is represented.
+
+Inspect or change storage with:
+
+```bash
+lgit storage show .npmrc
+lgit storage set .npmrc age
+lgit storage set .gitconfig plain
+lgit storage unset .npmrc
+lgit storage default
+lgit storage default plain
+```
+
+`storage set` migrates an already-tracked path atomically between the plain and age representations. Changing the repository default does not bulk-migrate existing tracked paths.
+
+## Dotfiles / standalone roots
+
+A normal Git repository is not required. To use your home directory as an lgit root:
+
+```bash
+lgit init --root ~ --env desktop --default plain --encryption password
+
+lgit add ~/.gitconfig
+lgit add ~/.config/helix
+lgit storage set ~/.npmrc age
+lgit add ~/.npmrc
+```
+
+No `.git` directory is created in your home directory. The companion Git directory stays under the lgit data directory.
+
+Nested lgit projects are supported. If `$HOME` is an lgit root and `~/code/Booking` has its own lgit project, commands inside Booking automatically use the nearest registered root. To explicitly operate on the home-level repository from inside a nested project:
+
+```bash
+lgit --root ~ status
+```
+
+Recursive adds stop at nested lgit roots and nested normal Git repositories, so `lgit add .` from a home-directory root does not ingest source repositories below it.
+
+## Attach on another computer
+
+For a normal project clone:
+
+```bash
+git clone git@github.com:company/booking.git
+cd Booking
+lgit remote set git@github.com:you/lgit-data.git
+lgit attach --env PCX
+```
+
+`lgit` discovers the remote project from the repository folder name. When multiple projects match, select one explicitly:
+
+```bash
+lgit attach --project booking-a43f91d2 --env PCX
+```
+
+For a standalone root, select the root explicitly:
+
+```bash
+lgit --root ~ remote set git@github.com:you/lgit-data.git
+lgit --root ~ attach --project arne-a43f91d2 --env desktop
+```
+
+Attachment refuses differing existing files by default. Use `--keep-local` to preserve local contents as modifications or `--use-remote` to replace them after backing them up under the lgit data directory.
+
+## Encryption
+
+Password mode uses age scrypt encryption and never stores the password:
 
 ```bash
 lgit init --env PCX --encryption password
 ```
 
-Password-mode projects prompt when encrypting or decrypting. The password is never stored in the repository. For non-interactive automation, `LGIT_PASSWORD` is supported, but setting secrets through the process environment should be limited to controlled environments. Existing identity-mode repositories remain fully compatible.
+For controlled non-interactive automation, `LGIT_PASSWORD` can provide the password.
+
+Identity mode uses an age X25519 identity stored outside repositories:
+
+```bash
+lgit key generate
+lgit key show
+lgit key export identity.txt
+lgit key import identity.txt
+```
+
+The remote can still see branch names, commit metadata, logical path names encoded in encrypted store paths, and approximate object sizes. Age protects file contents, not repository metadata.
 
 ## Environments
 
@@ -101,41 +156,43 @@ lgit env create PCY
 lgit env switch PCX
 ```
 
-Environment names are normalized to lowercase branch-safe names. Environment switches are refused while the companion work tree has uncommitted changes.
+Environment switching checks logical worktree cleanliness, handles plain/age representation changes, then materializes age-backed files after the Git branch switch.
 
-Remote-only environments are fetched and turned into local environment branches when switched to.
+## Git commands
 
-## Shared remote
-
-The remote configuration is global to the local lgit installation, so it can be set before a project is attached:
+Git remains the version-control engine:
 
 ```bash
-lgit remote set git@github.com:you/lgit-data.git
-```
-
-Each local companion repository fetches only branches for its own project namespace.
-
-## Normal Git commands
-
-Commands not owned by `lgit` are passed to Git using the external Git directory and the real project folder as the work tree:
-
-```bash
+lgit add .env
 lgit status
-lgit diff
-lgit log
-lgit restore .env
+lgit diff .env
 lgit commit -m "Update local configuration"
+lgit log
 lgit push
 lgit pull
 ```
 
-## Safety
+Commands that need logical-path translation are handled by lgit. Other commands continue to delegate to the companion Git repository.
 
-- The main repository and lgit must not track the same path. Attachment rejects such collisions.
-- `git clean -x` and `git clean -X` in the main repository can delete ignored files managed by lgit. Committed files are recoverable with `lgit restore`; uncommitted edits are not.
-- The shared remote is not an access-control boundary. Encryption can hide contents, but branch names, filenames, commit messages, and object metadata remain visible to users with repository access.
+For an explicit raw Git escape hatch:
 
-## Storage
+```bash
+lgit git status
+lgit git ls-files
+```
+
+Raw Git operates on physical companion paths, so encrypted files appear under `.lgit/store`.
+
+## Safety and current limits
+
+- A project-local lgit repository refuses paths already tracked by the normal Git repository.
+- Parent and child lgit roots cannot both own the same logical path.
+- Recursive add stops at nested Git and lgit roots.
+- Age storage currently supports regular files; symlink storage is rejected rather than silently changing semantics.
+- Companion repositories set `core.autocrlf=false` so plain and encrypted backends preserve bytes consistently across platforms.
+- `git clean -x` or `git clean -X` in a normal project can still delete ignored plaintext files managed by lgit. Committed state can be restored; uncommitted edits cannot.
+
+## Storage location
 
 ```bash
 lgit data-dir
@@ -147,19 +204,3 @@ Set `LGIT_DATA_DIR` to override the platform user configuration directory.
 ## License
 
 MIT
-
-
-## Encryption
-
-Encryption is enabled automatically for newly initialized projects. `lgit add` encrypts plaintext files with age before staging them. The project folder keeps the plaintext files applications need, while Git stores `.lgit/store/...age` ciphertext plus public metadata.
-
-The private age identity is stored outside repositories in the lgit data directory. To use another computer:
-
-```bash
-lgit key export identity.txt
-# transfer identity.txt securely
-lgit key import identity.txt
-lgit attach --env pcx
-```
-
-The remote can still see branch names, commit metadata, original relative paths encoded in the encrypted store path, and approximate sizes, but it cannot read file contents without the private identity.
