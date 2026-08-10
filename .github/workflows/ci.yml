@@ -1,31 +1,23 @@
-name: Apply canonical lookup fix
+name: CI
 
 on:
   push:
-    branches: [main]
+  pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  migrate:
-    runs-on: macos-latest
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.5'
-      - run: python3 scripts/fix_lookup_canonical.py
-      - run: gofmt -w internal/lgit/app.go
       - run: go test ./...
       - run: go vet ./...
       - run: go build ./cmd/lgit
-      - name: Commit fix
-        shell: bash
-        run: |
-          git config user.name "Arne Boedt"
-          git config user.email "30663198+ErnieBernie10@users.noreply.github.com"
-          git checkout HEAD -- .github/workflows/ci.yml
-          git add -A
-          git commit -m "fix: canonicalize registry lookup paths"
-          git push
