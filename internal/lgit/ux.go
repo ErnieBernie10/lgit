@@ -328,6 +328,7 @@ func structuralConflicts(root string, logical map[string]StorageBackend) ([]stri
 	var out []string
 	for rel := range logical {
 		parts := strings.Split(filepath.ToSlash(rel), "/")
+		blocked := false
 		for i := 1; i < len(parts); i++ {
 			ancestor := strings.Join(parts[:i], "/")
 			info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(ancestor)))
@@ -339,8 +340,12 @@ func structuralConflicts(root string, logical map[string]StorageBackend) ([]stri
 			}
 			if !info.IsDir() {
 				out = addUniqueOuter(out, ancestor)
+				blocked = true
 				break
 			}
+		}
+		if blocked {
+			continue
 		}
 		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
 		if err == nil && !info.Mode().IsRegular() {
@@ -604,11 +609,12 @@ func (a App) attachUX(root string, args []string) int {
 			return a.fail(fmt.Errorf("cannot attach %s/%s: %w; no files were changed", selected.Project, selected.Env, err))
 		}
 	}
-	content, err := contentConflictsAt(root, p, ref, logical, config, id)
+	structural, err := structuralConflicts(root, logical)
 	if err != nil {
 		return a.fail(err)
 	}
-	structural, err := structuralConflicts(root, logical)
+	contentLogical := logicalWithoutStructural(logical, structural)
+	content, err := contentConflictsAt(root, p, ref, contentLogical, config, id)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -645,7 +651,8 @@ func (a App) attachUX(root string, args []string) int {
 
 	rollback := filepath.Join(p.GitDir, "attach-rollback")
 	var mutationPaths []string
-	for rel := range logical {
+	rollbackLogical := logicalWithoutStructural(logical, structural)
+	for rel := range rollbackLogical {
 		mutationPaths = append(mutationPaths, rel)
 	}
 	mutationPaths = mergePaths(mutationPaths, structural, []string{".lgit"})
@@ -658,7 +665,7 @@ func (a App) attachUX(root string, args []string) int {
 	applied := false
 	defer func() {
 		if !applied {
-			restoreSnapshot(root, rollback, logical, structural)
+			restoreSnapshot(root, rollback, rollbackLogical, structural)
 		}
 	}()
 
