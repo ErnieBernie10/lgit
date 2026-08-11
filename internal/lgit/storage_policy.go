@@ -397,22 +397,18 @@ func (a App) mixedAdd(root string, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
+	if len(args) > 0 {
+		fmt.Fprintf(a.Stderr, "lgit: scanning %s\n", strings.Join(args, ", "))
+	}
 	paths, err := a.expandPaths(root, p, args)
 	if err != nil {
 		return a.fail(err)
 	}
-	var rs []age.Recipient
-	for _, path := range paths {
-		backend, _ := configuredBackend(c, path)
-		if backend == StorageAge && rs == nil {
-			rs, err = a.storageRecipients(root, c)
-			if err != nil {
-				return a.fail(err)
-			}
-		}
-		if err := a.addOne(root, p, c, path, backend, rs); err != nil {
-			return a.fail(err)
-		}
+	if len(paths) >= 100 {
+		fmt.Fprintf(a.Stderr, "lgit: found %d files; staging in batches\n", len(paths))
+	}
+	if err := a.mixedAddOptimized(root, p, c, paths); err != nil {
+		return a.fail(err)
 	}
 	return 0
 }
