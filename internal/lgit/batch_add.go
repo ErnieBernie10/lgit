@@ -1,6 +1,7 @@
 package lgit
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,9 +11,6 @@ import (
 	"filippo.io/age"
 )
 
-// gitPathBatchBudget keeps command lines comfortably below the Windows
-// CreateProcess limit while still collapsing thousands of per-file Git calls
-// into a small number of batched operations.
 const gitPathBatchBudget = 12 * 1024
 
 func splitPathBatches(paths []string, baseArgs []string) [][]string {
@@ -70,19 +68,13 @@ func mainTrackedSet(root string, standalone bool) (map[string]struct{}, error) {
 	return tracked, nil
 }
 
-// mixedAddOptimized handles the common plain-storage case in batches. Age
-// files still go through addOne because they require per-file encryption and
-// comparison against the staged ciphertext.
 func (a App) mixedAddOptimized(root string, p Project, c StorageConfig, paths []string) error {
 	mainTracked, err := mainTrackedSet(root, p.Standalone)
 	if err != nil {
 		return err
 	}
 
-	var plainAdd []string
-	var plainRemove []string
-	var agePaths []string
-
+	var plainAdd, plainRemove, agePaths []string
 	for _, path := range paths {
 		backend, _ := configuredBackend(c, path)
 		if backend == StorageAge {
@@ -92,7 +84,6 @@ func (a App) mixedAddOptimized(root string, p Project, c StorageConfig, paths []
 		if _, owned := mainTracked[path]; owned {
 			return fmt.Errorf("main repository already tracks %s", path)
 		}
-
 		full := filepath.Join(root, filepath.FromSlash(path))
 		info, statErr := os.Lstat(full)
 		sp := filepath.ToSlash(storePath(path))
@@ -118,21 +109,82 @@ func (a App) mixedAddOptimized(root string, p Project, c StorageConfig, paths []
 	if err := a.runPathBatches(root, p.GitDir, []string{"rm", "--cached", "--ignore-unmatch", "--"}, plainRemove); err != nil {
 		return err
 	}
+	if len(agePaths) == 0 {
+		return nil
+	}
 
-	var recipients []age.Recipient
-	for i, path := range agePaths {
-		if recipients == nil {
-			recipients, err = a.storageRecipients(root, c)
-			if err != nil {
-				return err
-			}
+	if err := a.ensureWrappedPasswordIdentity(root, p, c); err != nil {
+		return err
+	}
+	recipients, err := a.storageRecipients(root, c)
+	if err != nil {
+		return err
+	}
+	wrappedPassword := c.Encryption.Mode == "password" && hasWrappedPasswordIdentity(root)
+	var identity age.Identity
+	var ageAdd, ageRemove []string
+
+	for _, path := range agePaths {
+		if _, owned := mainTracked[path]; owned {
+			return fmt.Errorf("main repository already tracks %s", path)
 		}
-		if len(paths) >= 100 && (i+1)%100 == 0 {
-			fmt.Fprintf(a.Stderr, "lgit: encrypted %d/%d age-backed files\n", i+1, len(agePaths))
+		full := filepath.Join(root, filepath.FromSlash(path))
+		info, statErr := os.Lstat(full)
+		sp := filepath.ToSlash(storePath(path))
+		if os.IsNotExist(statErr) {
+			_ = os.Remove(filepath.Join(root, filepath.FromSlash(sp)))
+			ageRemove = append(ageRemove, path, sp)
+			continue
 		}
-		if err := a.addOne(root, p, c, path, StorageAge, recipients); err != nil {
+		if statErr != nil {
+			return statErr
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("only regular files are supported: %s", path)
+		}
+		plain, err := os.ReadFile(full)
+		if err != nil {
 			return err
 		}
+
+		if cipher, err := gitBlob(root, p.GitDir, ":"+sp); err == nil {
+			// Old password ciphertext used an expensive scrypt recipient per
+			// file. Once the wrapped project key exists, lgit add can migrate
+			// the selected path directly from its plaintext worktree contents.
+			if !(wrappedPassword && isScryptAgeCipher(cipher)) {
+				if identity == nil {
+					identity, err = a.storageIdentity(root, c)
+					if err != nil {
+						return err
+					}
+				}
+				old, err := decryptBytes(cipher, identity)
+				if err != nil {
+					return fmt.Errorf("decrypt staged %s: %w", path, err)
+				}
+				if bytes.Equal(old, plain) {
+					continue
+				}
+			}
+		}
+
+		cipher, err := encryptBytes(plain, recipients)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(root, filepath.FromSlash(sp))
+		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, cipher, 0600); err != nil {
+			return err
+		}
+		ageAdd = append(ageAdd, sp)
+		ageRemove = append(ageRemove, path)
 	}
-	return nil
+
+	if err := a.runPathBatches(root, p.GitDir, []string{"add", "--force", "--"}, ageAdd); err != nil {
+		return err
+	}
+	return a.runPathBatches(root, p.GitDir, []string{"rm", "--cached", "--ignore-unmatch", "--"}, ageRemove)
 }

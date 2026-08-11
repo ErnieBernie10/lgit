@@ -108,7 +108,7 @@ func configuredBackend(c StorageConfig, path string) (StorageBackend, string) {
 func (a App) initStorage(root string, p Project, backend StorageBackend, encryption string) error {
 	c := StorageConfig{Version: 1, Default: backend, Encryption: StorageEncryption{Mode: encryption}, Files: map[string]StorageBackend{}}
 	if encryption == "password" {
-		if _, err := a.readPassword(true); err != nil {
+		if _, err := a.createWrappedPasswordIdentity(root, true); err != nil {
 			return err
 		}
 	} else {
@@ -132,9 +132,9 @@ func (a App) initStorage(root string, p Project, backend StorageBackend, encrypt
 			return err
 		}
 	}
-	files := []string{".lgit/storage.toml"}
-	if encryption == "identity" {
-		files = append(files, ".lgit/recipients.txt")
+	files := []string{".lgit/storage.toml", ".lgit/recipients.txt"}
+	if encryption == "password" {
+		files = append(files, wrappedPasswordIdentityRel)
 	}
 	args := append([]string{"add", "--force", "--"}, files...)
 	if code := a.run(root, p.GitDir, args...); code != 0 {
@@ -149,6 +149,9 @@ func readLegacyAgeFormat(root string) (ageFormatFile, error) {
 
 func (a App) storageRecipients(root string, c StorageConfig) ([]age.Recipient, error) {
 	if c.Encryption.Mode == "password" {
+		if hasWrappedPasswordIdentity(root) {
+			return readRecipients(root)
+		}
 		password, err := a.readPassword(false)
 		if err != nil {
 			return nil, err
@@ -163,6 +166,9 @@ func (a App) storageRecipients(root string, c StorageConfig) ([]age.Recipient, e
 }
 func (a App) storageIdentity(root string, c StorageConfig) (age.Identity, error) {
 	if c.Encryption.Mode == "password" {
+		if hasWrappedPasswordIdentity(root) {
+			return a.loadWrappedPasswordIdentity(root)
+		}
 		password, err := a.readPassword(false)
 		if err != nil {
 			return nil, err
@@ -397,15 +403,9 @@ func (a App) mixedAdd(root string, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	if len(args) > 0 {
-		fmt.Fprintf(a.Stderr, "lgit: scanning %s\n", strings.Join(args, ", "))
-	}
-	paths, err := a.expandPaths(root, p, args)
+	paths, err := a.expandPathsFast(root, p, args)
 	if err != nil {
 		return a.fail(err)
-	}
-	if len(paths) >= 100 {
-		fmt.Fprintf(a.Stderr, "lgit: found %d files; staging in batches\n", len(paths))
 	}
 	if err := a.mixedAddOptimized(root, p, c, paths); err != nil {
 		return a.fail(err)
@@ -839,6 +839,10 @@ func (a App) setStorage(root string, p Project, c StorageConfig, raw string, bac
 	if _, tracked, _ := currentBackend(root, p, rel); tracked {
 		var rs []age.Recipient
 		if backend == StorageAge {
+			if err := a.ensureWrappedPasswordIdentity(root, p, c); err != nil {
+				rollback()
+				return a.fail(err)
+			}
 			rs, err = a.storageRecipients(root, c)
 			if err != nil {
 				rollback()
