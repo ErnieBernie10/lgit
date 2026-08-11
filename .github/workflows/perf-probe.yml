@@ -1,4 +1,4 @@
-name: Windows add performance probe
+name: Windows add performance probe v2
 
 on:
   push:
