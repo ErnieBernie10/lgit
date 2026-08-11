@@ -1,6 +1,6 @@
 # Development guidance for lgit
 
-This file is for agents and contributors **developing lgit itself**. It records architectural decisions, product invariants, performance lessons, compatibility requirements, and testing expectations that should survive across future changes.
+This file is for agents and contributors **developing lgit itself**. It records architectural decisions, product invariants, performance lessons, stability-stage policy, and testing expectations that should survive across future changes.
 
 For guidance on **using the installed lgit CLI**, use `skills/lgit/SKILL.md`. Do not turn this file into an end-user usage guide.
 
@@ -93,7 +93,7 @@ password
 
 The wrapped project identity lives at `.lgit/password-identity.age`. The password itself is never stored.
 
-Legacy per-file-scrypt repositories remain readable through lazy compatibility. Do not remove that compatibility casually; migration should be incremental rather than forcing users to rewrite all history.
+The current code can still read the earlier per-file-scrypt representation, but **that compatibility is not a product requirement during early development**. Do not preserve it if doing so meaningfully complicates a cleaner design, format change, or refactor. If a breaking encryption-format change is the best design, prefer the break and update tests/docs accordingly.
 
 A password KDF once per command can still impose a noticeable fixed cost. If this is optimized later, prefer OS credential/session-key caching or another explicit design over weakening scrypt security parameters.
 
@@ -241,19 +241,20 @@ Do not implement a separate environment state database that competes with Git br
 
 Encryption mode is effectively project-level for now. Do not make password/identity mode migration happen merely because someone edited TOML. A future change between encryption modes should be an explicit migration operation.
 
-## Backward compatibility
+## Compatibility policy during early development
 
-Existing repositories matter.
+**Backward compatibility is currently not required.** lgit is still in an early development stage, so the priority is getting the architecture, data model, CLI semantics, and on-disk/remote formats right before committing to stability.
 
-Current compatibility expectations include:
+Until a deliberate stability milestone is declared:
 
-- legacy age-only repositories without `storage.toml` continue to load as age-backed;
-- legacy identity encryption continues to work;
-- legacy password/scrypt ciphertext remains decryptable while selected files can migrate lazily to the wrapped-X25519 model;
-- introducing metadata/config changes should avoid decrypting and re-encrypting blobs unnecessarily;
-- changes to project/ref discovery should consider older naming conventions and existing remote data.
+- breaking changes to CLI behavior, metadata, repository layout, ref naming, encryption representation, or registry format are acceptable when they produce a materially cleaner design;
+- do not add compatibility readers, migration layers, aliases, deprecated code paths, or format-version complexity solely to preserve behavior from earlier development iterations;
+- existing compatibility code may remain when it is effectively free, but it must not constrain redesigns;
+- remove obsolete compatibility code and tests when they make the current design harder to understand or maintain;
+- update fixtures, tests, README examples, and `skills/lgit/SKILL.md` to the new model rather than carrying historical behavior forward;
+- do not spend engineering effort preserving repositories created only by earlier pre-stable versions unless explicitly requested for a specific reason.
 
-Prefer explicit migrations and compatibility readers over silently breaking existing repositories.
+Once lgit reaches a release/stability point where users are expected to rely on persisted repositories across upgrades, revisit this section and define an explicit compatibility/versioning policy. Do not assume that policy early.
 
 ## Code organization landmarks
 
@@ -261,7 +262,7 @@ The implementation is intentionally still small. Before creating new abstraction
 
 - `internal/lgit/app.go`: command routing and core Git-backed operations.
 - `internal/lgit/storage_policy.go`: `plain`/`age` policy, logical/physical representation, mixed storage behavior.
-- `internal/lgit/fast_password.go`: wrapped password identity and legacy password compatibility.
+- `internal/lgit/fast_password.go`: wrapped password identity and password-mode encryption mechanics.
 - `internal/lgit/walk_fast.go`: efficient recursive expansion and root boundaries.
 - `internal/lgit/root.go`: canonical roots and nearest-root resolution.
 - `internal/lgit/ux.go` / `ux_run.go`: attach/introspection UX and transactional preflight behavior.
