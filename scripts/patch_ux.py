@@ -47,6 +47,30 @@ if old not in s and new not in s:
     raise SystemExit('structural conflict anchor not found')
 if old in s:
     s = s.replace(old, new, 1)
+
+old = '''\tcontent, err := contentConflictsAt(root, p, ref, logical, config, id)
+\tif err != nil {
+\t\treturn a.fail(err)
+\t}
+\tstructural, err := structuralConflicts(root, logical)
+\tif err != nil {
+\t\treturn a.fail(err)
+\t}
+'''
+new = '''\tstructural, err := structuralConflicts(root, logical)
+\tif err != nil {
+\t\treturn a.fail(err)
+\t}
+\tcontentLogical := logicalWithoutStructural(logical, structural)
+\tcontent, err := contentConflictsAt(root, p, ref, contentLogical, config, id)
+\tif err != nil {
+\t\treturn a.fail(err)
+\t}
+'''
+if old not in s and new not in s:
+    raise SystemExit('attach preflight ordering anchor not found')
+if old in s:
+    s = s.replace(old, new, 1)
 ux.write_text(s)
 
 test = Path('internal/lgit/ux_test.go')
