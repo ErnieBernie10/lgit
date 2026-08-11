@@ -1,6 +1,49 @@
 # Agent guidance for lgit
 
-When configuring `lgit`, preserve Git as the version-control engine and use lgit roots to model real configuration ownership boundaries.
+When configuring or operating `lgit`, preserve Git as the version-control engine and use lgit's user-facing commands for lgit concepts. Do not inspect raw remote refs, `projects.json`, companion Git internals, or source code when the CLI exposes the information directly.
+
+## Prefer intent-level lgit commands
+
+For a fresh machine, prefer one attach operation:
+
+```sh
+lgit --root PATH attach REMOTE --env ENV
+```
+
+Do not manually run `git ls-remote` to discover lgit's `refs/heads/projects/.../envs/...` namespace. If you need to inspect a remote first, use:
+
+```sh
+lgit remote list REMOTE
+lgit remote list REMOTE --json
+```
+
+Before a potentially conflicting attach, use the built-in preflight rather than manually cloning or inspecting the remote Git tree:
+
+```sh
+lgit --root PATH attach REMOTE --env ENV --dry-run
+lgit --root PATH attach REMOTE --env ENV --dry-run --json
+```
+
+`attach` validates encryption and both content and filesystem-structure conflicts before changing the root. If `--use-remote` is chosen, lgit owns backup and replacement of conflicting entries. Do not manually move files into lgit's backup directory to work around checkout conflicts; report an lgit bug if attach cannot execute its own preflight plan.
+
+For current state, use:
+
+```sh
+lgit --root PATH info
+lgit --root PATH info --json
+```
+
+For age identity discovery, use:
+
+```sh
+lgit key path
+lgit key status
+lgit key status --json
+```
+
+Do not guess Linux/macOS/Windows config-directory locations or read lgit source to find the identity path.
+
+When machine-readable output is available, agents should prefer `--json` rather than parse human-oriented prose. Raw `lgit git ...` remains an expert debugging escape hatch, not the normal discovery API.
 
 ## Prefer application-specific standalone roots for cross-platform config
 
@@ -22,7 +65,7 @@ lgit init --root ~/.config/nvim --env linux --default plain
 
 ```powershell
 # Windows
-lgit attach --root "$env:LOCALAPPDATA\nvim" --env windows --project <neovim-project>
+lgit --root "$env:LOCALAPPDATA\nvim" attach REMOTE --env windows --project <neovim-project>
 ```
 
 Do not try to make a home-level lgit root translate `.config/nvim` into `AppData/Local/nvim`. Avoid adding platform path aliases, path rewriting, or mapping rules unless the product explicitly gains that feature later.
