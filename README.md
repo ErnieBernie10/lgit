@@ -19,6 +19,12 @@ It supports both ordinary Git storage and age-encrypted storage on a per-path ba
 go install github.com/ErnieBernie10/lgit/cmd/lgit@latest
 ```
 
+## Agent skill
+
+The repository ships a reusable Agent Skill at [`skills/lgit/SKILL.md`](skills/lgit/SKILL.md). It describes how an agent should operate lgit, choose roots, handle cross-platform configuration, inspect state, and troubleshoot attach/encryption issues using the user-facing CLI rather than repository internals.
+
+Install or copy the `skills/lgit` directory using your agent client's normal skill mechanism. The root of this repository intentionally does not contain usage-oriented `AGENTS.md` instructions; repository-level agent instructions should be reserved for contributing to lgit itself.
+
 ## Project-local files
 
 The default storage backend is `age`, preserving the original lgit use case:
