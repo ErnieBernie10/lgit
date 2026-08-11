@@ -1,69 +1,23 @@
-name: Apply batched add integration
+name: CI
 
 on:
   push:
-    branches: [main]
+  pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.5'
-      - name: Wire optimized add path
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('internal/lgit/storage_policy.go')
-          s = p.read_text()
-          start = s.index('func (a App) mixedAdd(root string, args []string) int {')
-          end = s.index('func (a App) mixedMaterialize(root string, p Project) error {', start)
-          replacement = '''func (a App) mixedAdd(root string, args []string) int {
-          \tif len(args) == 0 {
-          \t\treturn a.fail(fmt.Errorf("usage: lgit add PATH..."))
-          \t}
-          \tp, err := a.lookup(root)
-          \tif err != nil {
-          \t\treturn a.fail(err)
-          \t}
-          \tc, err := loadStorageConfig(root)
-          \tif err != nil {
-          \t\treturn a.fail(err)
-          \t}
-          \tif len(args) > 0 {
-          \t\tfmt.Fprintf(a.Stderr, "lgit: scanning %s\\n", strings.Join(args, ", "))
-          \t}
-          \tpaths, err := a.expandPaths(root, p, args)
-          \tif err != nil {
-          \t\treturn a.fail(err)
-          \t}
-          \tif len(paths) >= 100 {
-          \t\tfmt.Fprintf(a.Stderr, "lgit: found %d files; staging in batches\\n", len(paths))
-          \t}
-          \tif err := a.mixedAddOptimized(root, p, c, paths); err != nil {
-          \t\treturn a.fail(err)
-          \t}
-          \treturn 0
-          }
-
-          '''
-          p.write_text(s[:start] + replacement + s[end:])
-          PY
-      - run: gofmt -w internal/lgit/storage_policy.go internal/lgit/batch_add.go internal/lgit/batch_add_test.go
       - run: go test ./...
       - run: go vet ./...
       - run: go build ./cmd/lgit
-      - name: Commit implementation
-        shell: bash
-        run: |
-          git config user.name "Arne Boedt"
-          git config user.email "30663198+ErnieBernie10@users.noreply.github.com"
-          git add internal/lgit/storage_policy.go internal/lgit/batch_add.go internal/lgit/batch_add_test.go
-          git commit -m "perf: batch recursive plain-file adds"
-          git push
