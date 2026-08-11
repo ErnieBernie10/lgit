@@ -43,10 +43,10 @@ new = '''\tfor rel := range logical {
 \t\t}
 \t\tinfo, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
 '''
-if old not in s and new not in s:
-    raise SystemExit('structural conflict anchor not found')
 if old in s:
     s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('structural conflict anchor not found')
 
 old = '''\tcontent, err := contentConflictsAt(root, p, ref, logical, config, id)
 \tif err != nil {
@@ -67,10 +67,47 @@ new = '''\tstructural, err := structuralConflicts(root, logical)
 \t\treturn a.fail(err)
 \t}
 '''
-if old not in s and new not in s:
-    raise SystemExit('attach preflight ordering anchor not found')
 if old in s:
     s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('attach preflight ordering anchor not found')
+
+old = '''\trollback := filepath.Join(p.GitDir, "attach-rollback")
+\tvar mutationPaths []string
+\tfor rel := range logical {
+\t\tmutationPaths = append(mutationPaths, rel)
+\t}
+\tmutationPaths = mergePaths(mutationPaths, structural, []string{".lgit"})
+'''
+new = '''\trollback := filepath.Join(p.GitDir, "attach-rollback")
+\tvar mutationPaths []string
+\trollbackLogical := logicalWithoutStructural(logical, structural)
+\tfor rel := range rollbackLogical {
+\t\tmutationPaths = append(mutationPaths, rel)
+\t}
+\tmutationPaths = mergePaths(mutationPaths, structural, []string{".lgit"})
+'''
+if old in s:
+    s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('rollback snapshot anchor not found')
+
+old = '''\tdefer func() {
+\t\tif !applied {
+\t\t\trestoreSnapshot(root, rollback, logical, structural)
+\t\t}
+\t}()
+'''
+new = '''\tdefer func() {
+\t\tif !applied {
+\t\t\trestoreSnapshot(root, rollback, rollbackLogical, structural)
+\t\t}
+\t}()
+'''
+if old in s:
+    s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('rollback restore anchor not found')
 ux.write_text(s)
 
 test = Path('internal/lgit/ux_test.go')
@@ -83,8 +120,8 @@ new = '''\tappRun(t, App{}, original, "init", "--root", original, "--env", "wind
 \tappRun(t, App{}, original, "git", "config", "user.email", "test@example.com")
 \tappRun(t, App{}, original, "remote", "set", remote)
 '''
-if old not in s and new not in s:
-    raise SystemExit('test identity anchor not found')
 if old in s:
     s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('test identity anchor not found')
 test.write_text(s)
