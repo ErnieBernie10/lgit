@@ -77,6 +77,8 @@ func TestAttachUseRemoteHandlesStructuralConflictAndBacksItUp(t *testing.T) {
 	}
 	t.Setenv("LGIT_DATA_DIR", data1)
 	appRun(t, App{}, original, "init", "--root", original, "--env", "windows", "--default", "plain")
+	appRun(t, App{}, original, "git", "config", "user.name", "Test")
+	appRun(t, App{}, original, "git", "config", "user.email", "test@example.com")
 	appRun(t, App{}, original, "remote", "set", remote)
 	if err := os.WriteFile(filepath.Join(original, "config", "settings.json"), []byte("remote\n"), 0600); err != nil {
 		t.Fatal(err)
