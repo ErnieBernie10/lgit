@@ -35,11 +35,9 @@ func TestSplitPathBatchesKeepsReasonableCommandSize(t *testing.T) {
 
 func TestLargePlainDirectoryAdd(t *testing.T) {
 	root := t.TempDir()
-	data := t.TempDir()
-	app := testApp(t, root, data)
-	if code := app.Run([]string{"init", "--root", root, "--env", "desktop", "--default", "plain", "--encryption", "identity"}); code != 0 {
-		t.Fatalf("init failed: %s", testStderr(app))
-	}
+	data := filepath.Join(t.TempDir(), "data")
+	t.Setenv("LGIT_DATA_DIR", data)
+	appRun(t, App{}, root, "init", "--root", root, "--env", "desktop", "--default", "plain", "--encryption", "identity")
 
 	dir := filepath.Join(root, ".agents", "skills")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -56,11 +54,8 @@ func TestLargePlainDirectoryAdd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app = testApp(t, root, data)
-	if code := app.Run([]string{"--root", root, "add", ".agents/skills", ".agents/.skill-lock.json"}); code != 0 {
-		t.Fatalf("add failed: %s", testStderr(app))
-	}
-	p, err := app.lookup(root)
+	appRun(t, App{}, root, "--root", root, "add", ".agents/skills", ".agents/.skill-lock.json")
+	p, err := App{}.lookup(root)
 	if err != nil {
 		t.Fatal(err)
 	}
