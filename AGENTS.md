@@ -280,6 +280,8 @@ If a storage-aware operation is not implemented safely, return a clear explicit 
 
 Prefer concise success behavior and actionable failures. Do not expose internal progress or Git setup details unless requested through a verbose/debug mechanism.
 
+Clean-state checks must distinguish a genuinely dirty worktree from an inability to determine cleanliness. Return `(bool, error)` (or equivalent) and propagate Git/config/identity/decryption errors instead of converting them into misleading "uncommitted changes" messages.
+
 ## Development workflow and verification
 
 The project targets **Go 1.26.5**. Keep `go.mod` and CI aligned with that exact version unless intentionally changing the project toolchain.

@@ -555,38 +555,17 @@ func (a App) envCreate(root string, p Project, name string) int {
 	if e != nil {
 		return a.fail(e)
 	}
-	if !a.clean(root, p) {
+	clean, err := a.mixedClean(root, p)
+	if err != nil {
+		return a.fail(fmt.Errorf("cannot create environment: determine working tree state: %w", err))
+	}
+	if !clean {
 		return a.fail(fmt.Errorf("cannot create environment: uncommitted changes"))
 	}
 	if c := a.run(root, p.GitDir, "switch", "-c", "env/"+name); c != 0 {
 		return c
 	}
 	return a.setEnvironment(root, p, name)
-}
-func (a App) envSwitchLegacy(root string, p Project, name string) int {
-	name, e := validateName(name)
-	if e != nil {
-		return a.fail(e)
-	}
-	if name == p.Environment {
-		return 0
-	}
-	if !a.clean(root, p) {
-		return a.fail(fmt.Errorf("cannot switch environment: uncommitted changes"))
-	}
-	if _, e := gitOutput(root, p.GitDir, "rev-parse", "--verify", "refs/heads/env/"+name); e != nil {
-		_ = a.run(root, p.GitDir, "fetch", "origin")
-		if c := a.run(root, p.GitDir, "switch", "-c", "env/"+name, "refs/remotes/origin/envs/"+name); c != 0 {
-			return c
-		}
-	} else if c := a.run(root, p.GitDir, "checkout", "--no-overwrite-ignore", "env/"+name); c != 0 {
-		return c
-	}
-	return a.setEnvironment(root, p, name)
-}
-func (a App) cleanLegacy(root string, p Project) bool {
-	o, e := gitOutput(root, p.GitDir, "status", "--porcelain")
-	return e == nil && strings.TrimSpace(o) == ""
 }
 func (a App) setEnvironment(root string, p Project, name string) int {
 	_, rp, e := a.paths()

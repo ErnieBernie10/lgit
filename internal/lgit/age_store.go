@@ -596,34 +596,6 @@ func (a App) attach(root string, args []string) int {
 	return 0
 }
 
-func (a App) encryptionClean(root string, p Project) bool {
-	stores, err := trackedStore(root, p, "HEAD")
-	if err != nil {
-		return false
-	}
-	id, err := a.decryptionIdentity(root)
-	if err != nil {
-		return false
-	}
-	for _, sp := range stores {
-		cipher, err := gitBlob(root, p.GitDir, "HEAD:"+sp)
-		if err != nil {
-			return false
-		}
-		want, err := decryptBytes(cipher, id)
-		if err != nil {
-			return false
-		}
-		got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(plainPath(sp))))
-		if err != nil || !bytes.Equal(got, want) {
-			return false
-		}
-	}
-	out, err := gitOutput(root, p.GitDir, "status", "--porcelain", "--", ".lgit")
-	return err == nil && strings.TrimSpace(out) == ""
-}
-func (a App) clean(root string, p Project) bool { return a.encryptionClean(root, p) }
-
 func (a App) ageStatus(root string, args []string) int {
 	p, err := a.lookup(root)
 	if err != nil {
@@ -689,49 +661,6 @@ func (a App) ageRestore(root string, args []string) int {
 		if err := os.WriteFile(dst, plain, 0600); err != nil {
 			return a.fail(err)
 		}
-	}
-	return 0
-}
-
-func (a App) envSwitch(root string, p Project, name string) int {
-	name, e := validateName(name)
-	if e != nil {
-		return a.fail(e)
-	}
-	if name == p.Environment {
-		return 0
-	}
-	if !a.clean(root, p) {
-		return a.fail(fmt.Errorf("cannot switch environment: uncommitted changes"))
-	}
-	if _, e := gitOutput(root, p.GitDir, "rev-parse", "--verify", "refs/heads/env/"+name); e != nil {
-		_ = a.run(root, p.GitDir, "fetch", "origin")
-		if c := a.run(root, p.GitDir, "switch", "-c", "env/"+name, "refs/remotes/origin/envs/"+name); c != 0 {
-			return c
-		}
-	} else if c := a.run(root, p.GitDir, "checkout", "env/"+name); c != 0 {
-		return c
-	}
-	if err := a.materialize(root, p); err != nil {
-		return a.fail(err)
-	}
-	return a.setEnvironment(root, p, name)
-}
-
-func (a App) pull(root string, args []string) int {
-	p, e := a.lookup(root)
-	if e != nil {
-		return a.fail(e)
-	}
-	if !a.clean(root, p) {
-		return a.fail(fmt.Errorf("cannot pull: uncommitted changes"))
-	}
-	x := append([]string{"pull", "--ff-only", "origin", remoteBranch(p, p.Environment)}, args...)
-	if c := a.run(root, p.GitDir, x...); c != 0 {
-		return c
-	}
-	if err := a.materialize(root, p); err != nil {
-		return a.fail(err)
 	}
 	return 0
 }
