@@ -476,40 +476,50 @@ func (a App) mixedMaterialize(root string, p Project) error {
 	return os.WriteFile(oldFile, []byte(strings.Join(lines, "\n")+"\n"), 0600)
 }
 
-func (a App) mixedClean(root string, p Project) bool {
-	if out, err := gitOutput(root, p.GitDir, "status", "--porcelain", "--untracked-files=no"); err != nil || strings.TrimSpace(out) != "" {
-		return false
+func (a App) mixedClean(root string, p Project) (bool, error) {
+	out, err := gitOutput(root, p.GitDir, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	if strings.TrimSpace(out) != "" {
+		return false, nil
 	}
 	stores, err := trackedStore(root, p, "HEAD")
 	if err != nil {
-		return false
+		return false, err
 	}
 	if len(stores) == 0 {
-		return true
+		return true, nil
 	}
 	c, err := loadStorageConfig(root)
 	if err != nil {
-		return false
+		return false, err
 	}
 	id, err := a.storageIdentity(root, c)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, sp := range stores {
 		cipher, err := gitBlob(root, p.GitDir, "HEAD:"+sp)
 		if err != nil {
-			return false
+			return false, err
 		}
 		want, err := decryptBytes(cipher, id)
 		if err != nil {
-			return false
+			return false, fmt.Errorf("decrypt %s: %w", plainPath(sp), err)
 		}
 		got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(plainPath(sp))))
-		if err != nil || !bytes.Equal(got, want) {
-			return false
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !bytes.Equal(got, want) {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 func (a App) mixedStatus(root string, args []string) int {
@@ -961,7 +971,11 @@ func (a App) envSwitchMixed(root string, p Project, name string) int {
 	if name == p.Environment {
 		return 0
 	}
-	if !a.mixedClean(root, p) {
+	clean, err := a.mixedClean(root, p)
+	if err != nil {
+		return a.fail(fmt.Errorf("cannot switch environment: determine working tree state: %w", err))
+	}
+	if !clean {
 		return a.fail(fmt.Errorf("cannot switch environment: uncommitted changes"))
 	}
 	target := "refs/heads/env/" + name
@@ -998,7 +1012,11 @@ func (a App) pullMixed(root string, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	if !a.mixedClean(root, p) {
+	clean, err := a.mixedClean(root, p)
+	if err != nil {
+		return a.fail(fmt.Errorf("cannot pull: determine working tree state: %w", err))
+	}
+	if !clean {
 		return a.fail(fmt.Errorf("cannot pull: uncommitted changes"))
 	}
 	if code := a.run(root, p.GitDir, "fetch", "origin", remoteBranch(p, p.Environment)); code != 0 {
