@@ -68,12 +68,14 @@ func (a App) syncCommand(root string, args []string) int {
 		return a.fail(err)
 	}
 
-	clean, err := a.mixedClean(root, p)
-	if err != nil {
-		return a.fail(fmt.Errorf("cannot sync: determine working tree state: %w", err))
-	}
-	if !o.Push && !clean {
-		return a.fail(fmt.Errorf("cannot sync: local tracked files have uncommitted changes; use 'lgit sync --push' to commit and publish them"))
+	if !o.Push {
+		clean, err := a.mixedClean(root, p)
+		if err != nil {
+			return a.fail(fmt.Errorf("cannot sync: determine working tree state: %w", err))
+		}
+		if !clean {
+			return a.fail(fmt.Errorf("cannot sync: local tracked files have uncommitted changes; use 'lgit sync --push' to commit and publish them"))
+		}
 	}
 
 	plan, err := a.buildSyncPlan(root, p, o)
@@ -138,6 +140,20 @@ type syncGraph struct {
 
 func inspectSyncGraph(root string, p Project, remote string) (syncGraph, error) {
 	var g syncGraph
+	ref := "refs/heads/" + remoteBranch(p, p.Environment)
+	ls := exec.Command("git", "ls-remote", "--heads", remote, ref)
+	out, err := ls.CombinedOutput()
+	if err != nil {
+		return g, fmt.Errorf("inspect remote environment: %v: %s", err, out)
+	}
+	g.remoteExists = strings.TrimSpace(string(out)) != ""
+	if !g.remoteExists {
+		return g, nil
+	}
+	if _, err := gitOutput(root, p.GitDir, "rev-parse", "--verify", "HEAD"); err != nil {
+		return g, fmt.Errorf("remote environment already exists but local environment has no commits; attach the remote environment instead")
+	}
+
 	d, err := os.MkdirTemp("", "lgit-sync-graph-")
 	if err != nil {
 		return g, err
@@ -155,17 +171,6 @@ func inspectSyncGraph(root string, p Project, remote string) (syncGraph, error) 
 	if err := runSyncGitQuiet(d, "--git-dir="+d, "fetch", p.GitDir, "HEAD:refs/heads/local"); err != nil {
 		return g, fmt.Errorf("inspect local sync history: %w", err)
 	}
-	ref := "refs/heads/" + remoteBranch(p, p.Environment)
-	ls := exec.Command("git", "ls-remote", "--heads", remote, ref)
-	out, err := ls.CombinedOutput()
-	if err != nil {
-		return g, fmt.Errorf("inspect remote environment: %v: %s", err, out)
-	}
-	if strings.TrimSpace(string(out)) == "" {
-		cleanupOnError = false
-		return g, nil
-	}
-	g.remoteExists = true
 	if err := runSyncGitQuiet(d, "--git-dir="+d, "fetch", remote, ref+":refs/heads/remote"); err != nil {
 		return g, fmt.Errorf("fetch remote environment for sync plan: %w", err)
 	}
@@ -411,6 +416,7 @@ func (a App) renderSyncPlan(plan SyncPlan, asJSON bool) int {
 
 type syncSnapshot struct {
 	head    string
+	unborn  bool
 	index   []byte
 	indexOK bool
 	files   map[string][]byte
@@ -419,11 +425,12 @@ type syncSnapshot struct {
 
 func captureSyncSnapshot(root string, p Project, changes SyncChanges) (syncSnapshot, error) {
 	s := syncSnapshot{files: map[string][]byte{}, missing: map[string]bool{}}
-	head, err := gitOutput(root, p.GitDir, "rev-parse", "HEAD")
+	head, err := gitOutput(root, p.GitDir, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		return s, err
+		s.unborn = true
+	} else {
+		s.head = strings.TrimSpace(head)
 	}
-	s.head = strings.TrimSpace(head)
 	if b, err := os.ReadFile(filepath.Join(p.GitDir, "index")); err == nil {
 		s.index = b
 		s.indexOK = true
@@ -444,8 +451,14 @@ func captureSyncSnapshot(root string, p Project, changes SyncChanges) (syncSnaps
 }
 
 func (a App) restoreSyncSnapshot(root string, p Project, s syncSnapshot) {
-	_ = a.run(root, p.GitDir, "reset", "--hard", s.head)
-	_ = a.mixedMaterialize(root, p)
+	if s.unborn {
+		if ref, err := gitOutput(root, p.GitDir, "symbolic-ref", "-q", "HEAD"); err == nil {
+			_ = a.run(root, p.GitDir, "update-ref", "-d", strings.TrimSpace(ref))
+		}
+	} else {
+		_ = a.run(root, p.GitDir, "reset", "--hard", s.head)
+		_ = a.mixedMaterialize(root, p)
+	}
 	for path, b := range s.files {
 		dst := filepath.Join(root, filepath.FromSlash(path))
 		_ = os.MkdirAll(filepath.Dir(dst), 0700)
