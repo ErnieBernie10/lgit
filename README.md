@@ -252,6 +252,33 @@ lgit git ls-files
 
 Raw Git operates on physical companion paths, so encrypted files appear under `.lgit/store`. Raw Git is an expert escape hatch, not the normal way to discover lgit projects or diagnose attach state.
 
+## Synchronizing an environment
+
+Use `sync` for the normal cross-machine workflow instead of manually sequencing add/commit/pull/push.
+
+```bash
+# Receive and reconcile committed remote changes.
+lgit sync
+
+# Preview what a bidirectional sync would do.
+lgit sync --push --dry-run
+
+# Reconcile already-tracked local modifications/deletions, create an
+# `lgit sync` commit when needed, integrate remote changes, and push.
+lgit sync --push
+```
+
+`sync --push` deliberately operates only on logical paths that are already tracked. New untracked files are never captured implicitly; add them explicitly with `lgit add PATH` first. Removing a tracked directory is supported: sync discovers the missing tracked descendants and commits their deletions.
+
+Dry-run is non-mutating and can be consumed by automation:
+
+```bash
+lgit sync --dry-run
+lgit sync --push --dry-run --json
+```
+
+If local and remote histories changed the same logical path independently, sync reports the logical conflict before mutating the worktree rather than exposing `.lgit/store` ciphertext conflicts.
+
 ## Safety and current limits
 
 - A project-local lgit repository refuses paths already tracked by the normal Git repository.

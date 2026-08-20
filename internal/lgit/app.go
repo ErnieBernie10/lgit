@@ -73,6 +73,8 @@ func (a App) Run(cwd string, args []string) int {
 		return a.push(root, args[1:])
 	case "pull":
 		return a.pullMixed(root, args[1:])
+	case "sync":
+		return a.syncCommand(root, args[1:])
 	case "add":
 		return a.mixedAdd(root, args[1:])
 	case "status":
@@ -101,7 +103,7 @@ Usage:
   lgit env current|branch|list|create NAME|switch NAME
   lgit key generate|show|export FILE|import FILE
   lgit add PATH... | lgit status | lgit diff [PATH...] | lgit restore PATH...
-  lgit push | lgit pull
+  lgit push | lgit pull | lgit sync [--push] [--dry-run] [--json]
   lgit git <raw git command>
   lgit <git command>`)
 	return 0

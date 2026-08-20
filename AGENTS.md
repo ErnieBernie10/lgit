@@ -213,6 +213,16 @@ When adding automation-relevant state, prefer a stable structured output mode in
 
 `lgit git ...` remains an expert/debugging escape hatch. Do not make raw companion Git commands the normal discovery or recovery workflow.
 
+## Sync architecture
+
+`lgit sync` is the high-level synchronization boundary. Keep it plan-first and logical-path-aware. Dry-run and execution must share the same planner so that preview behavior cannot drift from real behavior.
+
+Default `sync` is receive-only. `sync --push` may automatically stage and commit modifications/deletions of already-tracked logical files, but it must never implicitly add new untracked files. Directory deletion is represented by deletion of its tracked logical descendants.
+
+Sync conflict reporting must use logical paths. Never expose encrypted `.lgit/store/*.age` paths as merge conflicts. If a conflict cannot be resolved safely at the logical layer, fail before entering a partial Git conflict state.
+
+A dry-run must not persistently mutate the worktree, companion index, current branch, registry, commits, or remote refs. Remote inspection should use disposable state.
+
 ## Filesystem safety
 
 Project-local lgit must not manage a path already tracked by the main Git repository.

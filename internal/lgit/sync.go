@@ -3,7 +3,6 @@ package lgit
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,16 +26,16 @@ type SyncChanges struct {
 }
 
 type SyncPlan struct {
-	Environment       string      `json:"environment"`
-	LocalChanges      SyncChanges `json:"local_changes"`
-	LocalCommitsAhead int         `json:"local_commits_ahead"`
-	RemoteCommitsAhead int        `json:"remote_commits_ahead"`
-	Diverged          bool        `json:"diverged"`
-	RemoteExists      bool        `json:"remote_exists"`
-	WouldCommit       bool        `json:"would_commit"`
-	WouldPull         bool        `json:"would_pull"`
-	WouldPush         bool        `json:"would_push"`
-	Conflicts         []string    `json:"conflicts"`
+	Environment        string      `json:"environment"`
+	LocalChanges       SyncChanges `json:"local_changes"`
+	LocalCommitsAhead  int         `json:"local_commits_ahead"`
+	RemoteCommitsAhead int         `json:"remote_commits_ahead"`
+	Diverged           bool        `json:"diverged"`
+	RemoteExists       bool        `json:"remote_exists"`
+	WouldCommit        bool        `json:"would_commit"`
+	WouldPull          bool        `json:"would_pull"`
+	WouldPush          bool        `json:"would_push"`
+	Conflicts          []string    `json:"conflicts"`
 }
 
 func parseSyncOptions(args []string) (SyncOptions, error) {
@@ -92,7 +91,7 @@ func (a App) syncCommand(root string, args []string) int {
 
 func (a App) buildSyncPlan(root string, p Project, o SyncOptions) (SyncPlan, error) {
 	plan := SyncPlan{Environment: p.Environment}
-	changes, tracked, err := a.trackedWorkingChanges(root, p)
+	changes, _, err := a.trackedWorkingChanges(root, p)
 	if err != nil {
 		return plan, err
 	}
@@ -109,6 +108,9 @@ func (a App) buildSyncPlan(root string, p Project, o SyncOptions) (SyncPlan, err
 	if err != nil {
 		return plan, err
 	}
+	if graph.dir != "" {
+		defer os.RemoveAll(graph.dir)
+	}
 	plan.RemoteExists = graph.remoteExists
 	plan.LocalCommitsAhead = graph.localAhead
 	plan.RemoteCommitsAhead = graph.remoteAhead
@@ -117,7 +119,7 @@ func (a App) buildSyncPlan(root string, p Project, o SyncOptions) (SyncPlan, err
 	plan.WouldPush = o.Push && (!graph.remoteExists || graph.localAhead > 0 || plan.WouldCommit || plan.Diverged)
 
 	if graph.remoteExists && graph.remoteAhead > 0 && (graph.localAhead > 0 || plan.WouldCommit) {
-		conflicts, err := syncLogicalConflicts(root, p, graph, tracked, changes)
+		conflicts, err := syncLogicalConflicts(root, p, graph, changes)
 		if err != nil {
 			return plan, err
 		}
@@ -147,10 +149,10 @@ func inspectSyncGraph(root string, p Project, remote string) (syncGraph, error) 
 			_ = os.RemoveAll(d)
 		}
 	}()
-	if err := runGitQuiet(d, "init", "--bare", d); err != nil {
+	if err := runSyncGitQuiet(d, "init", "--bare", d); err != nil {
 		return g, err
 	}
-	if err := runGitQuiet(d, "--git-dir="+d, "fetch", p.GitDir, "HEAD:refs/heads/local"); err != nil {
+	if err := runSyncGitQuiet(d, "--git-dir="+d, "fetch", p.GitDir, "HEAD:refs/heads/local"); err != nil {
 		return g, fmt.Errorf("inspect local sync history: %w", err)
 	}
 	ref := "refs/heads/" + remoteBranch(p, p.Environment)
@@ -164,7 +166,7 @@ func inspectSyncGraph(root string, p Project, remote string) (syncGraph, error) 
 		return g, nil
 	}
 	g.remoteExists = true
-	if err := runGitQuiet(d, "--git-dir="+d, "fetch", remote, ref+":refs/heads/remote"); err != nil {
+	if err := runSyncGitQuiet(d, "--git-dir="+d, "fetch", remote, ref+":refs/heads/remote"); err != nil {
 		return g, fmt.Errorf("fetch remote environment for sync plan: %w", err)
 	}
 	counts, err := gitCmdOutput(d, "--git-dir="+d, "rev-list", "--left-right", "--count", "refs/heads/local...refs/heads/remote")
@@ -186,7 +188,7 @@ func inspectSyncGraph(root string, p Project, remote string) (syncGraph, error) 
 	return g, nil
 }
 
-func runGitQuiet(dir string, args ...string) error {
+func runSyncGitQuiet(dir string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
@@ -309,8 +311,7 @@ func (a App) trackedWorkingChanges(root string, p Project) (SyncChanges, map[str
 	return changes, tracked, nil
 }
 
-func syncLogicalConflicts(root string, p Project, g syncGraph, tracked map[string]StorageBackend, working SyncChanges) ([]string, error) {
-	defer os.RemoveAll(g.dir)
+func syncLogicalConflicts(root string, p Project, g syncGraph, working SyncChanges) ([]string, error) {
 	localChanged, err := changedLogicalPaths(g.dir, g.mergeBase, "refs/heads/local")
 	if err != nil {
 		return nil, err
@@ -409,11 +410,11 @@ func (a App) renderSyncPlan(plan SyncPlan, asJSON bool) int {
 }
 
 type syncSnapshot struct {
-	head      string
-	index     []byte
-	indexOK   bool
-	files     map[string][]byte
-	missing   map[string]bool
+	head    string
+	index   []byte
+	indexOK bool
+	files   map[string][]byte
+	missing map[string]bool
 }
 
 func captureSyncSnapshot(root string, p Project, changes SyncChanges) (syncSnapshot, error) {
@@ -459,11 +460,6 @@ func (a App) restoreSyncSnapshot(root string, p Project, s syncSnapshot) {
 }
 
 func (a App) executeSyncPlan(root string, p Project, o SyncOptions, plan SyncPlan) int {
-	defer func() {
-		// buildSyncPlan owns a temporary graph directory when a remote exists.
-		// It is safe to remove here after planning is complete.
-	}()
-
 	snapshot, err := captureSyncSnapshot(root, p, plan.LocalChanges)
 	if err != nil {
 		return a.fail(err)
@@ -549,5 +545,3 @@ func isAncestor(root, gitDir, ancestor, descendant string) bool {
 	cmd.Dir = root
 	return cmd.Run() == nil
 }
-
-var errSyncNoHead = errors.New("sync requires an initial commit")
