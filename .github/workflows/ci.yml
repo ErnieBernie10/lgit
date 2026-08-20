@@ -2,33 +2,22 @@ name: CI
 
 on:
   push:
-    branches:
-      - feat/sync-command
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  integrate:
-    if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: feat/sync-command
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.5'
-      - run: python3 scripts/finalize-sync.py
-      - run: gofmt -w internal/lgit/sync.go internal/lgit/sync_test.go
       - run: go test ./...
       - run: go vet ./...
       - run: go build ./cmd/lgit
-      - name: Commit validated code only
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add internal/lgit/sync.go internal/lgit/sync_test.go
-          git commit -m 'test: harden sync edge cases'
-          git push origin HEAD:feat/sync-command
