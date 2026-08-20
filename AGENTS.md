@@ -314,6 +314,7 @@ The CLI should be self-describing enough that an agent does not need to:
 Prefer first-class lgit introspection such as:
 
 ```text
+lgit version
 lgit info
 lgit info --json
 lgit key path
@@ -321,6 +322,8 @@ lgit key status
 lgit key status --json
 lgit remote list
 lgit remote list --json
+lgit sync --all --dry-run
+lgit sync --all --dry-run --json
 lgit attach ... --dry-run
 lgit attach ... --dry-run --json
 ```
@@ -329,27 +332,122 @@ When adding automation-relevant state, prefer a stable structured output mode in
 
 `lgit git ...` remains an expert/debugging escape hatch. Do not make raw companion Git commands the normal discovery or recovery workflow.
 
+Installed-binary identity matters during bug reports. `lgit version` should use Go build metadata/pseudo-versions when available so an agent can distinguish a stale installed binary from current source before debugging behavior.
+
+## Shared remote authority
+
+`Registry.Remote` is the authoritative shared remote configuration.
+
+A companion repository's `origin` is derived local Git configuration and may be missing or stale. Commands that need a real companion remote should quietly repair `origin` from `Registry.Remote` rather than treating missing `origin` as proof that the shared remote is unconfigured.
+
+Dry-run operations must inspect `Registry.Remote` directly and must not mutate companion remote configuration merely to build a plan.
+
+`lgit remote set URL` is global by product semantics. It should update the registry and normalize every registered companion repository, not only the root that happened to be current.
+
+Keep error taxonomy explicit:
+
+```text
+shared remote is not configured
+cannot reach shared remote
+cannot configure project remote
+remote environment does not exist
+```
+
+Do not collapse those into one misleading configuration error.
+
 ## Sync architecture
 
-`lgit sync` is the high-level synchronization boundary. Keep it plan-first and logical-path-aware. Dry-run and execution must share the same planner so preview behavior cannot drift from real behavior.
+`lgit sync` is the high-level synchronization boundary. Keep it plan-first and logical-path-aware. Dry-run and execution should share the same decision model so preview behavior cannot drift from real behavior.
 
 Default `sync` is receive-only. `sync --push` may automatically stage and commit modifications/deletions of already-tracked logical files, but it must never implicitly add new untracked files. Directory deletion is represented by deletion of its tracked logical descendants.
 
 Sync conflict reporting must use logical paths. Never expose encrypted `.lgit/store/*.age` paths as merge conflicts. If a conflict cannot be resolved safely at the logical layer, fail before entering a partial Git conflict state.
 
-A dry-run must not persistently mutate the worktree, companion index, current branch, registry, commits, or remote refs. Remote inspection should use disposable state.
+A dry-run must not persistently mutate the worktree, companion index, current branch, registry, commits, companion remote configuration, or remote refs. Remote inspection should use disposable state.
+
+Successful sync plumbing is quiet. Do not expose routine `fetch`, `merge`, `push`, object-transfer, or fast-forward chatter. Capture Git failure diagnostics and report lgit-level success/output.
+
+### `sync --all`
+
+`lgit sync --all` operates over every locally registered root.
+
+Process roots **serially and deterministically**. Do not parallelize by default: password prompts, output attribution, and predictable filesystem/Git behavior matter more than small latency savings.
+
+Each root has its own transactional sync boundary. There is no cross-root rollback. If one root fails, record the error, continue processing later roots, and return non-zero only after the complete set has been attempted.
+
+`--root` and `sync --all` are intentionally incompatible because they express conflicting scopes.
+
+### Untracked drift
+
+Untracked drift is advisory discovery of new files inside areas lgit already manages. It is not a second inventory and it must never be implicitly staged by `sync --push`.
+
+The scanner must remain **bounded by managed scope**. Never run unrestricted untracked discovery against a broad standalone root such as `$HOME`.
+
+Required algorithm shape:
+
+- derive logical tracked paths from the union of `HEAD` and index;
+- scan immediate tracked parent directories as explicit Git pathspecs;
+- deduplicate those parent directories;
+- for root-level tracked files, perform one `os.ReadDir(root)` and pass direct non-directory entries as explicit pathspecs;
+- batch pathspecs using the existing Windows-safe command-size budget;
+- never replace the bounded set with `.`, `*`, or `:(glob)*`;
+- filter age-backed logical plaintext paths, `.lgit`, main-Git-owned files, nested lgit roots, and nested Git repositories.
+
+This is a correctness/performance invariant, not a micro-optimization. Whole-home untracked scanning has been measured at hundreds of thousands of entries and tens of seconds, while bounded tracked-parent scans complete in roughly a tenth of a second on the same machine.
+
+If a remote path would overwrite or structurally collide with untracked drift, detect it before mutating the worktree. Report the logical path and preserve local state.
+
+`lgit status` and `lgit sync` should reuse the same drift scanner; do not maintain separate interpretations.
 
 ## CLI behavior principles
+
+There must be one **production** top-level CLI behavior path. The binary enters through `RunCLI`; `RunUX` is only a compatibility wrapper during pre-stable cleanup. Do not add a second independently maintained help/router surface again.
 
 Match Git's mental model where possible.
 
 Commands whose semantics depend on logical-path/storage translation must be lgit-aware. Commands that naturally operate on refs/commits may delegate to Git.
+
+Implicit Git delegation is allowed only for actual Git commands. Unknown lgit verbs should produce an lgit-level error rather than misleading `git: '<verb>' is not a git command` output. `lgit git ...` remains the unconditional raw-Git escape hatch.
 
 If a storage-aware operation is not implemented safely, return a clear explicit error rather than silently doing the wrong thing.
 
 Prefer concise success behavior and actionable failures. Do not expose internal progress or Git setup details unless requested through a verbose/debug mechanism.
 
 Clean-state checks must distinguish a genuinely dirty worktree from an inability to determine cleanliness. Return `(bool, error)` (or equivalent) and propagate Git/config/identity/decryption errors instead of converting them into misleading "uncommitted changes" messages.
+
+## Compatibility policy during early development
+
+**Backward compatibility is currently not required.** lgit is still in an early development stage, so the priority is getting the architecture, data model, CLI semantics, and on-disk/remote formats right before committing to stability.
+
+Until a deliberate stability milestone is declared:
+
+- breaking changes to CLI behavior, metadata, repository layout, ref naming, encryption representation, or registry format are acceptable when they produce a materially cleaner design;
+- do not add compatibility readers, migration layers, aliases, deprecated code paths, or format-version complexity solely to preserve behavior from earlier development iterations;
+- existing compatibility code may remain when it is effectively free, but it must not constrain redesigns;
+- remove obsolete compatibility code and tests when they make the current design harder to understand or maintain;
+- update fixtures, tests, README examples, and `skills/lgit/SKILL.md` to the new model rather than carrying historical behavior forward;
+- do not spend engineering effort preserving repositories created only by earlier pre-stable versions unless explicitly requested for a specific reason.
+
+Once lgit reaches a release/stability point where users are expected to rely on persisted repositories across upgrades, revisit this section and define an explicit compatibility/versioning policy. Do not assume that policy early.
+
+## Code organization landmarks
+
+The implementation is intentionally still small. Before creating new abstractions, inspect the existing responsibilities:
+
+- `internal/lgit/app.go`: legacy/core command routing and Git-backed operations.
+- `internal/lgit/cli.go`: production CLI routing/help, known Git-command delegation, sync/status UX.
+- `internal/lgit/version.go`: installed build/version reporting.
+- `internal/lgit/remote_runtime.go`: authoritative shared remote lookup and companion-origin normalization.
+- `internal/lgit/sync.go`: original per-root sync planner/executor primitives.
+- `internal/lgit/sync_v2.go`: hardened per-root/all-root sync orchestration and user-facing plans.
+- `internal/lgit/untracked.go`: bounded untracked-drift discovery.
+- `internal/lgit/storage_policy.go`: `plain`/`age` policy, logical/physical representation, mixed storage behavior.
+- `internal/lgit/fast_password.go`: wrapped password identity and password-mode encryption mechanics.
+- `internal/lgit/walk_fast.go`: efficient recursive expansion and root boundaries.
+- `internal/lgit/root.go`: canonical roots and nearest-root resolution.
+- `internal/lgit/ux.go`: attach/introspection UX and transactional preflight behavior.
+
+Keep abstractions proportional to real requirements. Do not introduce a generalized framework when a small enum/helper is enough.
 
 ## Development workflow and verification
 
@@ -375,7 +473,7 @@ Cross-platform behavior is not verified until the relevant matrix jobs have actu
 
 For filesystem, path, CRLF, symlink/junction, encryption, or process-performance changes, add focused regression tests for the platform-sensitive behavior.
 
-When a bug comes from a real user/agent workflow, preserve that shape in a regression test where practical. Examples already include large directory add performance and attach structural blockers.
+When a bug comes from a real user/agent workflow, preserve that shape in a regression test where practical. Examples already include large directory add performance, attach structural blockers, missing companion origins, bounded home-root drift scanning, and multi-root synchronization.
 
 **GitHub Actions is validation-only.** Persistent CI workflows must use read-only repository permissions and must never author commits, amend commits, push branches, or rewrite refs. Do not use `github-actions[bot]` as a permanent implementation author/committer. If an automated environment is needed to run formatting, profiling, or platform-specific tests, publish the result as logs/artifacts only; apply the resulting repository changes through a user-attributed commit path and then let CI validate that commit.
 

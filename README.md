@@ -17,6 +17,14 @@ It supports both ordinary Git storage and age-encrypted storage on a per-path ba
 
 ```bash
 go install github.com/ErnieBernie10/lgit/cmd/lgit@latest
+lgit version
+```
+
+When troubleshooting a machine where behavior does not match current documentation, check `lgit version` first. Installing a specific commit is supported and produces a reproducible Go pseudo-version:
+
+```bash
+go install github.com/ErnieBernie10/lgit/cmd/lgit@bfa5f4c
+lgit version
 ```
 
 ## Agent skill
@@ -184,10 +192,13 @@ For an attached root it reports the project, environment, remote, data directory
 Focused help is available directly from the installed binary:
 
 ```bash
+lgit sync --help
 lgit attach --help
 lgit key --help
 lgit remote --help
 ```
+
+Unknown lgit verbs fail as lgit errors instead of falling through to a misleading `git: '<verb>' is not a git command` message. Genuine Git commands such as `lgit log` and `lgit commit` still delegate to the companion repository.
 
 ## Encryption
 
@@ -252,12 +263,12 @@ lgit git ls-files
 
 Raw Git operates on physical companion paths, so encrypted files appear under `.lgit/store`. Raw Git is an expert escape hatch, not the normal way to discover lgit projects or diagnose attach state.
 
-## Synchronizing an environment
+## Synchronizing environments
 
 Use `sync` for the normal cross-machine workflow instead of manually sequencing add/commit/pull/push.
 
 ```bash
-# Receive and reconcile committed remote changes.
+# Receive and reconcile committed remote changes for the current root.
 lgit sync
 
 # Preview what a bidirectional sync would do.
@@ -268,16 +279,59 @@ lgit sync --push --dry-run
 lgit sync --push
 ```
 
+For a whole machine with multiple registered roots:
+
+```bash
+# Inspect every local lgit root.
+lgit sync --all --dry-run
+
+# Receive remote changes for every root.
+lgit sync --all
+
+# Preview and then publish tracked local changes for every root.
+lgit sync --all --push --dry-run
+lgit sync --all --push
+```
+
+`sync --all` processes registered roots serially in deterministic order. One failing root does not prevent later roots from being inspected or synchronized; the command returns a non-zero exit status after all roots have been processed if any root failed.
+
 `sync --push` deliberately operates only on logical paths that are already tracked. New untracked files are never captured implicitly; add them explicitly with `lgit add PATH` first. Removing a tracked directory is supported: sync discovers the missing tracked descendants and commits their deletions.
+
+### Untracked drift
+
+`lgit status` and `lgit sync` also report **untracked drift** inside areas lgit already manages. This is advisory: drift is never automatically added by `sync --push`.
+
+Example:
+
+```text
+?? .config/opencode/plugins/new-plugin.js
+```
+
+Track it explicitly if it belongs in lgit:
+
+```bash
+lgit add .config/opencode/plugins/new-plugin.js
+```
+
+Drift discovery is deliberately bounded. lgit scans only tracked parent directories and explicit root-level filenames; it never performs an unrestricted `git status` over a broad standalone root such as `$HOME`. This keeps home-directory roots practical even when they contain hundreds of thousands of unrelated files.
+
+If a remote change would overwrite or structurally collide with an untracked local path, sync reports a logical conflict before mutating the worktree.
+
+### Dry-run and JSON
 
 Dry-run is non-mutating and can be consumed by automation:
 
 ```bash
 lgit sync --dry-run
 lgit sync --push --dry-run --json
+lgit sync --all --dry-run --json
 ```
 
 If local and remote histories changed the same logical path independently, sync reports the logical conflict before mutating the worktree rather than exposing `.lgit/store` ciphertext conflicts.
+
+The shared remote stored in lgit's registry is authoritative. A missing or stale `origin` in an individual companion repository is repaired automatically during a real sync/push/pull; dry-run inspects the shared remote without mutating the companion configuration.
+
+Successful sync operations suppress routine Git fetch/merge/push chatter and report lgit-level results instead.
 
 ## Safety and current limits
 
@@ -307,6 +361,8 @@ lgit info --json
 lgit key status --json
 lgit remote list REMOTE --json
 lgit attach REMOTE --env NAME --dry-run --json
+lgit sync --push --dry-run --json
+lgit sync --all --dry-run --json
 ```
 
 Prefer these interfaces in agents and scripts over parsing human-oriented prose or raw Git refs.

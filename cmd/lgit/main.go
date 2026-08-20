@@ -12,5 +12,5 @@ func main() {
 		os.Stderr.WriteString("lgit: " + err.Error() + "\n")
 		os.Exit(1)
 	}
-	os.Exit((lgit.App{Stdout: os.Stdout, Stderr: os.Stderr}).RunUX(cwd, os.Args[1:]))
+	os.Exit((lgit.App{Stdout: os.Stdout, Stderr: os.Stderr}).RunCLI(cwd, os.Args[1:]))
 }

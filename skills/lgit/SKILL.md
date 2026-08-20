@@ -1,16 +1,26 @@
 ---
 name: lgit
-description: Operate and configure the lgit CLI for project-local files, dotfiles, standalone roots, encrypted storage, remote attachment, and environment management. Use when an agent needs to initialize, attach, inspect, synchronize, or troubleshoot an lgit-managed root.
+description: Operate and configure the lgit CLI for project-local files, dotfiles, standalone roots, encrypted storage, remote attachment, synchronization, and environment management. Use when an agent needs to initialize, attach, inspect, synchronize, or troubleshoot an lgit-managed root.
 license: MIT
 compatibility: Requires the lgit CLI and Git. Some workflows also require age identity material or an lgit password.
 metadata:
   author: ErnieBernie10
-  version: "1.0"
+  version: "1.1"
 ---
 
 # lgit usage
 
 Use `lgit` as the user-facing interface for lgit concepts. Git remains the version-control engine underneath, but raw companion-repository internals are an expert debugging surface, not the normal operating interface.
+
+## Verify the installed binary first
+
+When behavior does not match current documentation or source, check the installed build before debugging anything else:
+
+```sh
+lgit version
+```
+
+A `go install ...@<commit>` installation carries a Go pseudo-version tied to that source revision. Do not assume a locally rebuilt/stale binary represents the source tree being inspected.
 
 ## Prefer intent-level lgit commands
 
@@ -164,21 +174,24 @@ lgit git ls-files
 
 Raw Git exposes physical companion paths such as `.lgit/store/...` for encrypted files, so do not use it as the normal discovery or automation interface.
 
-## Troubleshooting sequence
-
-When an lgit command behaves unexpectedly:
-
-1. Run `lgit --root PATH info --json`.
-2. For remote selection problems, run `lgit remote list REMOTE --json`.
-3. For attach problems, run the same attach command with `--dry-run --json`.
-4. For identity-mode encryption problems, run `lgit key status --json` and `lgit key path`.
-5. Use `lgit git ...` or inspect internals only after the lgit-facing interfaces are insufficient.
-
-Prefer reporting a reproducible lgit bug over manually modifying companion Git internals.
-
 ## Routine synchronization
 
-Prefer the first-class sync workflow over manually sequencing raw Git operations:
+For machine-level inspection, prefer the all-root workflow first:
+
+```sh
+lgit version
+lgit sync --all --dry-run
+lgit sync --all
+```
+
+When tracked local changes should also be published:
+
+```sh
+lgit sync --all --push --dry-run
+lgit sync --all --push
+```
+
+For one root only:
 
 ```sh
 lgit sync --dry-run
@@ -187,6 +200,57 @@ lgit sync --push --dry-run
 lgit sync --push
 ```
 
-`lgit sync` receives/reconciles committed remote changes and refuses dirty tracked state. `lgit sync --push` treats modifications and deletions of already-tracked logical files as local intent, stages them, creates an `lgit sync` commit when needed, integrates remote history, and pushes the current environment. It does not implicitly add new untracked files.
+`lgit sync` receives/reconciles committed remote changes and refuses dirty tracked state. `lgit sync --push` treats modifications and deletions of already-tracked logical files as local intent, stages them, creates an `lgit sync` commit when needed, integrates remote history, and pushes the current environment.
 
-Use `--dry-run --json` when an agent needs a machine-readable plan. Treat the logical paths in `conflicts` as user-facing conflicts; do not inspect `.lgit/store` or attempt to resolve encrypted physical blobs with raw Git.
+`sync --all` processes every locally registered root serially and continues after a failure so the remaining roots are still inspected. Treat a non-zero final exit code as "at least one root failed", not as evidence that later roots were skipped.
+
+### Untracked drift
+
+`lgit status` and `lgit sync` report untracked drift only inside bounded areas lgit already manages. This is advisory and is never added automatically by `sync --push`.
+
+If the output contains:
+
+```text
+?? .config/opencode/plugins/new-plugin.js
+```
+
+inspect it and explicitly add it only when it belongs in lgit:
+
+```sh
+lgit add .config/opencode/plugins/new-plugin.js
+```
+
+Do not work around drift detection by running unrestricted `git status` over a broad root such as `$HOME`. lgit deliberately scopes discovery to tracked parent directories and explicit root-level files.
+
+If a remote path conflicts with untracked local drift, treat the logical-path conflict reported by lgit as authoritative. Do not inspect or manually merge `.lgit/store` ciphertext.
+
+Use `--dry-run --json` when an agent needs a machine-readable plan. For all roots:
+
+```sh
+lgit sync --all --dry-run --json
+```
+
+## Shared remote behavior
+
+The shared remote configured by lgit is authoritative. A missing/stale `origin` inside an individual companion Git repository is derived local state and may be repaired automatically by a real sync/push/pull.
+
+Do not diagnose a missing companion `origin` as "shared remote not configured" without first checking lgit's own state:
+
+```sh
+lgit info --json
+```
+
+Dry-run should not mutate companion remote configuration.
+
+## Troubleshooting sequence
+
+When an lgit command behaves unexpectedly:
+
+1. Run `lgit version`.
+2. Run `lgit --root PATH info --json` or `lgit sync --all --dry-run --json` for machine-wide state.
+3. For remote selection problems, run `lgit remote list REMOTE --json`.
+4. For attach problems, run the same attach command with `--dry-run --json`.
+5. For identity-mode encryption problems, run `lgit key status --json` and `lgit key path`.
+6. Use `lgit git ...` or inspect internals only after the lgit-facing interfaces are insufficient.
+
+Prefer reporting a reproducible lgit bug over manually modifying companion Git internals.
