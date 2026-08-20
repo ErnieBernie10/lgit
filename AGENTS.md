@@ -4,91 +4,129 @@ This file is for agents and contributors **developing lgit itself**. It records 
 
 For guidance on **using the installed lgit CLI**, use `skills/lgit/SKILL.md`. Do not turn this file into an end-user usage guide.
 
-## Product identity
+## Product model
 
-`lgit` is a Git-backed companion repository for files that should not live in a project's normal Git repository. It adds logical-path handling, external worktree roots, storage transformations, environment namespacing, and safety around Git; it is **not a replacement version-control system**.
+`lgit` is a Git-backed companion repository for files that should not live in a project's normal Git repository, plus standalone roots such as dotfiles.
+
+The source project/root remains the actual worktree. Companion Git metadata lives externally under the lgit data directory.
 
 The core rule is:
 
-> Git remains authoritative for what is tracked, the index, commits, history, branches, refs, remotes, fetch, push, and object storage.
+> lgit remains Git, not a separate VCS.
 
-Do not introduce a second inventory, commit graph, index, or bespoke history database inside lgit.
+Git owns:
 
-## Git tree is the inventory
+- tracked physical representations and inventory;
+- index state;
+- commits and history;
+- branches/environments;
+- refs/remotes;
+- fetch/push/object storage.
 
-`.lgit/storage.toml` is a **storage policy**, not a manifest of tracked files.
+lgit adds:
 
-Responsibilities are intentionally split:
+- a logical worktree abstraction where a logical path may map to another physical representation in the companion repository;
+- external standalone roots;
+- storage/encryption policy;
+- root/project/environment discovery and safety.
 
-- Git tree/index: what is tracked and the current physical representation.
-- `.lgit/storage.toml`: default/explicit storage policy for logical paths.
-- project filesystem: the materialized user-facing plaintext view.
+Do not create parallel state that competes with Git when Git already models it correctly.
 
-For `plain` storage:
+## Storage policy is not inventory
+
+`.lgit/storage.toml` is policy/configuration. It is **not** the tracked-file manifest.
+
+The split is:
 
 ```text
-logical path == Git path
+Git                 -> what is tracked + commits/history/index/refs/remotes
+storage.toml        -> how a logical path should be stored / first-add policy
+project filesystem  -> materialized user view
 ```
 
-For `age` storage:
+Git trees and the index are authoritative for whether a path is tracked.
 
-```text
-logical path: .npmrc
-Git path:     .lgit/store/.npmrc.age
-```
+Do not redesign `storage.toml` into a second inventory database.
 
-The Git representation of an already-tracked file determines its **current backend**. Changing the storage default must not reinterpret or silently migrate existing tracked files.
+## Logical paths and physical representations
 
-## Storage model
-
-There are currently only two real storage backends:
+Supported storage backends are:
 
 ```text
 plain
 age
 ```
 
-Keep this simple. Do not build a plugin/backend framework until a real third backend exists.
-
-Storage configuration uses exact logical paths. Do not add globbing, pattern precedence, recursive rule semantics, or sensitivity guessing without an explicit product decision.
-
-Backend resolution for a newly tracked path is:
+Plain paths are stored directly in the companion Git tree:
 
 ```text
-explicit [files] entry, otherwise default
+logical: .gitconfig
+Git:     .gitconfig
 ```
 
-Unknown backend values and unsupported config versions must fail explicitly.
+Age-backed paths are stored under the private physical store:
 
-Storage migrations such as `plain -> age`, `age -> plain`, and `storage unset` must be atomic from the user's perspective. Never leave configuration and Git representation disagreeing because an operation failed halfway through.
+```text
+logical: .npmrc
+Git:     .lgit/store/.npmrc.age
+```
+
+Nested example:
+
+```text
+logical: .ssh/config
+Git:     .lgit/store/.ssh/config.age
+```
+
+User-facing commands should speak in **logical paths**. `.lgit/store/...` is an implementation detail except for explicit expert/debug/raw-Git operations.
+
+When a command mutates tracked file state, determine whether it needs logical-path handling before delegating to raw Git.
+
+## Storage migration
+
+Changing a tracked path between `plain` and `age` is a real physical-representation migration, not merely a config edit.
+
+Expected direction:
+
+- `plain -> age`: encrypt logical source, stage store representation, remove direct companion representation, update/stage storage policy;
+- `age -> plain`: stage logical plaintext representation, remove encrypted companion representation, update/stage storage policy.
+
+The source logical file remains the user's usable plaintext file.
+
+Storage mutation must be treated transactionally enough to avoid leaving config/index/store in contradictory states when an operation fails.
+
+Changing the default storage backend does **not** implicitly migrate every tracked file. The default is first-add policy unless a deliberate bulk migration feature is implemented.
 
 ## Encryption architecture
 
-`age` is the content-encryption implementation. Storage backend and encryption credential mechanism are separate concepts:
+Encryption uses the native Go `filippo.io/age` library. Do not add a dependency on an external `age` executable.
+
+Current modes:
 
 ```text
-backend:          plain | age
-encryption mode: identity | password
+identity
+password
 ```
 
-Do not collapse these into pseudo-backends such as `age-password` or `age-identity`.
+Identity mode uses an age identity stored outside the managed repository data and public recipients in project metadata where appropriate.
 
-### Identity mode
+Password mode must **not** use an expensive password/scrypt recipient independently for every tracked file.
 
-Identity mode uses an age X25519 identity stored outside repositories. Public recipients may be committed; private identities must not be committed.
-
-### Password mode
-
-Do **not** return to per-file scrypt encryption.
-
-That design caused severe Windows performance problems because age's intentionally expensive scrypt KDF was run once for every file. A small 10-file add measured roughly 8 seconds in password mode.
-
-Current password mode instead uses:
+The intended model is:
 
 ```text
 password
-  -> scrypt once to unlock a wrapped project X25519 identity
-  -> fast X25519 age operations for repository files
+   |
+   | scrypt / password KDF once when unlocking
+   v
+wrapped project identity
+   |
+   v
+X25519 project key
+   |
+   +-- file 1
+   +-- file 2
+   +-- file 3
 ```
 
 The wrapped project identity lives at `.lgit/password-identity.age`. The password itself is never stored.
@@ -97,178 +135,199 @@ The current code can still read the earlier per-file-scrypt representation, but 
 
 A password KDF once per command can still impose a noticeable fixed cost. If this is optimized later, prefer OS credential/session-key caching or another explicit design over weakening scrypt security parameters.
 
-## Performance is a product requirement
+## Performance requirements
 
-Do not assume slow behavior is an unavoidable Git limitation. Measure the command path first.
+Directory operations must scale with the amount of real work, not with avoidable subprocess or registry overhead.
 
-Two performance bugs have already occurred:
+Lessons already learned:
 
-1. `add` launched Git subprocesses per file, causing thousands of processes for large directory adds and heavy Microsoft Defender activity.
-2. recursive path expansion reloaded the registry and canonicalized/resolved paths for every visited directory.
+- do not launch Git once or twice per ordinary plain file when operations can be batched;
+- respect Windows command-line length limits when batching paths;
+- do not reload the lgit registry or recanonicalize every ancestor for every visited directory;
+- precompute nested lgit boundaries once per command where possible;
+- do not run password KDF work once per encrypted file;
+- avoid randomized ciphertext churn when staged/committed encrypted plaintext has not changed;
+- successful `lgit add` should be quiet like `git add` rather than printing scanning/batching implementation details.
 
-The fixes establish these rules:
+When performance is reported as poor, measure the actual operation shape and separate:
 
-- batch Git path operations;
-- precompute nested-root boundaries once per command;
-- do not reload the registry inside a recursive walk;
-- do not resolve symlinks/canonical paths once per visited directory;
-- avoid unnecessary file reads, encryption, and Git subprocesses;
-- acquire/decrypt password identity once per command and reuse it across files.
+```text
+filesystem traversal
+Git subprocess overhead
+Git index work
+encryption/decryption
+password KDF
+antivirus/endpoint scanning amplification
+```
 
-A small plain `lgit add` should feel close to `git add`, not take multiple seconds. Multi-second latency for a few ordinary files is a performance regression that should be investigated, not explained away.
+Do not attribute multi-second small-directory operations to "Git being slow" without evidence.
 
-Successful `lgit add` is intentionally quiet, matching Git. Do not print internal messages such as "scanning", "found N files", or "adding in batches" during ordinary successful operation. Diagnostic verbosity should be opt-in.
+Windows matters. Process creation and large numbers of small filesystem operations can be substantially more expensive there and can amplify Microsoft Defender/other antivirus work.
 
-## Roots and ownership
+## Root model
 
-lgit supports project-local roots and standalone roots such as `$HOME` without creating a normal `.git` directory in the standalone root.
+Roots may be:
 
-Once initialized, registered lgit roots are authoritative for command routing.
+- normal Git-project-local lgit roots;
+- standalone roots such as `$HOME`;
+- nested application-specific roots.
 
-When several registered roots contain the current directory:
-
-> The nearest/deepest registered root owns the path.
+Root resolution uses the **nearest/deepest registered root** containing the current path.
 
 Example:
 
 ```text
-/home/arne                  home/dotfiles root
-/home/arne/code/Booking     Booking root
+/home/user                 standalone home root
+/home/user/.config/nvim    optional standalone/app-specific root
+/home/user/code/project    project-local lgit root
 ```
 
-A command under `Booking` resolves to the Booking root. `--root` is the explicit override when the caller intentionally wants another registered root.
+The deepest applicable root owns the operation.
 
-A logical path may belong to only one lgit root. Parent and nested lgit projects must not overlap ownership.
+A parent root must not recursively ingest a registered child lgit root.
 
-Recursive operations must stop at:
+A parent root must also stop at nested normal Git repositories/worktrees.
 
-- another registered lgit root;
-- another normal Git repository;
-- `.git` and `.lgit` internal directories.
+Directly adding content owned by a nested root should fail clearly rather than silently crossing ownership boundaries.
 
-Do not let `lgit add .` from a home root ingest nested source repositories.
+Canonical-path handling must account for platform aliases/symlinks such as macOS `/var` versus `/private/var`. Windows registry/root matching is case-insensitive.
 
-## Cross-platform configuration roots
+## Cross-platform application roots
 
-Do not solve application-specific OS path differences by adding implicit path remapping to a broad home root.
+Do not invent a generalized cross-platform path-remapping layer just to make broad home roots appear portable.
 
-For applications whose config root changes by platform, prefer independent standalone roots that attach to the same logical lgit project. For example, Neovim may use `~/.config/nvim` on Linux and `%LOCALAPPDATA%\nvim` on Windows.
+When an application's physical configuration root differs by platform, prefer a standalone lgit root at the application's configuration directory on each machine.
 
-The physical local root is machine-specific; the logical contents inside that root are portable.
-
-User/agent workflow details for this convention belong in `skills/lgit/SKILL.md`, not here.
-
-## Attach is an intent-level transaction
-
-`attach` must be a complete user-facing operation. Users and agents should not need to know remote ref namespaces, temporary Git repositories, checkout mechanics, registry layout, or age identity filesystem conventions.
-
-The intended flow is conceptually:
+Example Neovim:
 
 ```text
-discover remote/project/environment
-  -> inspect target tree and storage metadata
-  -> verify encryption requirements
-  -> compute content conflicts
-  -> compute structural filesystem conflicts
-  -> determine backup/replacement plan
-  -> apply atomically
-  -> register root
+Linux:   ~/.config/nvim
+Windows: %LOCALAPPDATA%\nvim
 ```
 
-All meaningful preflight work should happen **before mutating the user's root**.
-
-### Structural conflicts matter
-
-Do not only compare leaf-file contents. If the remote needs `config/app/settings.json`, existing `config` or `config/app` entries may themselves block materialization because they are files, symlinks, junctions, or incompatible filesystem objects.
-
-Preflight must discover these blockers before Git checkout does.
-
-`--use-remote` means the remote representation wins. lgit must back up all local entries that block that representation and then complete the operation itself.
-
-`--keep-local` may preserve regular-file content conflicts, but it cannot preserve structurally incompatible representations. Fail with an lgit-level explanation instead of leaking a later Git checkout error.
-
-### Attach atomicity
-
-A failed attach should leave the user's filesystem as it was before attach and leave the root unregistered.
-
-Rollback/snapshot logic must reason in ownership units. If a structural blocker is `config`, do not separately try to snapshot `config/settings.json` beneath it; that previously caused `ENOTDIR` failures.
-
-Internal `git init`, fetch, and checkout chatter should stay quiet during normal attach. Expose lgit's own actionable errors instead.
-
-## Human and agent introspection
-
-The CLI should expose intent-level state rather than forcing callers to inspect implementation details.
-
-Current examples include:
+Both can represent the same logical project tree:
 
 ```text
-lgit info [--json]
-lgit remote list REMOTE [--json]
-lgit key path
-lgit key status [--json]
-lgit attach ... --dry-run [--json]
+init.lua
+lua/
+after/
+ftplugin/
 ```
 
-When adding automation-relevant state, prefer a stable structured output mode instead of encouraging agents to parse prose or raw Git refs.
+This is cleaner than teaching one `$HOME` project aliases such as `.config/nvim <-> AppData/Local/nvim`.
 
-`lgit git ...` remains an expert/debugging escape hatch. Do not make raw companion Git commands the normal discovery or recovery workflow.
+A broad `$HOME` root remains appropriate for paths that are genuinely home-relative across the intended machines.
 
-## Filesystem safety
+## Main Git ownership
 
-Project-local lgit must not manage a path already tracked by the main Git repository.
+For project-local lgit roots, the normal project Git repository retains ownership of files it already tracks.
 
-Run ownership checks before operations that materialize or take control of logical files, not only when initially adding them; the main repository may start tracking a path later.
+lgit must refuse to manage paths tracked by the main repository.
 
-Age-backed storage currently supports regular files. Do not silently follow or reinterpret symlinks. If symlink support is added, define an explicit portable metadata representation for file type/target/mode first.
+Standalone roots do not have a main Git ownership check because no normal repository is implied.
 
-Preserve bytes across storage backends. Companion repositories set:
+Do not make lgit silently steal ownership from a main repository.
+
+## Symlinks and file types
+
+Age-backed storage currently supports regular files only.
+
+Do not encrypt symlink targets as if they were regular files.
+
+Recursive traversal should not follow symlink loops or platform equivalents such as junction/reparse cycles.
+
+If symlink support is introduced, define the logical semantics explicitly and add Windows/macOS/Linux tests rather than relying on incidental `filepath` behavior.
+
+Executable bits must be preserved through encrypted representation/materialization where supported.
+
+`core.autocrlf=false` is deliberate for companion Git so lgit preserves exact bytes such as CRLF content.
+
+## Environments
+
+Environments are Git branches conceptually and must remain grounded in Git history.
+
+Remote namespace:
 
 ```text
-core.autocrlf=false
+projects/<project-slug>-<project-id>/envs/<environment>
 ```
 
-Do not allow `plain <-> age` migration to change CRLF/LF bytes.
+Local environment branch:
 
-Executable-mode and other Unix metadata changes must be intentional and tested across platforms.
+```text
+env/<environment>
+```
 
-## Environments and remote namespace
+Switch/pull behavior must operate at the logical worktree level when mixed storage is involved.
 
-Environments remain Git branches under the lgit remote namespace. Git refs/remotes are implementation details for users but are still the actual version-control mechanism.
-
-Environment switching must reason in logical paths and storage backends, then materialize the correct plaintext view after the Git state changes.
+Before changing representation between environments (for example an age-backed path becoming plain), prepare/remove the incompatible logical materialization so Git checkout does not fail because of an untracked-file collision.
 
 Do not implement a separate environment state database that competes with Git branches.
 
-Encryption mode is effectively project-level for now. Do not make password/identity mode migration happen merely because someone edited TOML. A future change between encryption modes should be an explicit migration operation.
+## Attach is a high-level transaction
 
-## Compatibility policy during early development
+`attach` should be a complete intent-level operation. Users and agents should not need to understand lgit's internal remote ref namespace, companion GitDir layout, checkout mechanics, or encryption store to attach a machine.
 
-**Backward compatibility is currently not required.** lgit is still in an early development stage, so the priority is getting the architecture, data model, CLI semantics, and on-disk/remote formats right before committing to stability.
+Attach design order:
 
-Until a deliberate stability milestone is declared:
+```text
+discover/select project and environment
+inspect encryption requirements
+validate credentials/identity
+construct complete filesystem conflict plan
+resolve according to policy
+checkout/materialize
+register root
+```
 
-- breaking changes to CLI behavior, metadata, repository layout, ref naming, encryption representation, or registry format are acceptable when they produce a materially cleaner design;
-- do not add compatibility readers, migration layers, aliases, deprecated code paths, or format-version complexity solely to preserve behavior from earlier development iterations;
-- existing compatibility code may remain when it is effectively free, but it must not constrain redesigns;
-- remove obsolete compatibility code and tests when they make the current design harder to understand or maintain;
-- update fixtures, tests, README examples, and `skills/lgit/SKILL.md` to the new model rather than carrying historical behavior forward;
-- do not spend engineering effort preserving repositories created only by earlier pre-stable versions unless explicitly requested for a specific reason.
+Do not mutate the real worktree until preflight has identified all blockers it reasonably can.
 
-Once lgit reaches a release/stability point where users are expected to rely on persisted repositories across upgrades, revisit this section and define an explicit compatibility/versioning policy. Do not assume that policy early.
+Conflict detection must include **structural conflicts**, not only differing leaf file bytes.
 
-## Code organization landmarks
+Example:
 
-The implementation is intentionally still small. Before creating new abstractions, inspect the existing responsibilities:
+```text
+local:  .config/app/agents -> symlink
+remote: .config/app/agents/ -> directory
+```
 
-- `internal/lgit/app.go`: command routing and core Git-backed operations.
-- `internal/lgit/storage_policy.go`: `plain`/`age` policy, logical/physical representation, mixed storage behavior.
-- `internal/lgit/fast_password.go`: wrapped password identity and password-mode encryption mechanics.
-- `internal/lgit/walk_fast.go`: efficient recursive expansion and root boundaries.
-- `internal/lgit/root.go`: canonical roots and nearest-root resolution.
-- `internal/lgit/ux.go` / `ux_run.go`: attach/introspection UX and transactional preflight behavior.
-- `skills/lgit/SKILL.md`: end-user/agent operational guidance, not development instructions.
+That conflict must be detected before Git checkout.
 
-Keep abstractions proportional to real requirements. Do not introduce a generalized framework when a small enum/helper is enough.
+`--use-remote` means the remote representation wins. Back up every local entry that blocks materializing the target remote tree, including structural blockers.
+
+`--keep-local` may preserve ordinary file-content conflicts after checkout, but it cannot preserve incompatible simultaneous filesystem structures. Explain that case before mutation.
+
+A failed attach should leave the user's filesystem and registration state as close as possible to the pre-attach state. Prefer explicit snapshots/backups/rollback over hoping Git checkout can unwind everything.
+
+Internal Git setup/fetch/checkout chatter should normally be quiet. User-facing output should describe lgit-level intent and actionable problems.
+
+## Introspection and agent usability
+
+The CLI should be self-describing enough that an agent does not need to:
+
+- inspect `projects.json`;
+- fetch lgit source code just to find a key path;
+- use `git ls-remote` to discover lgit projects/environments;
+- manually inspect `.lgit/store`;
+- bare-clone the remote to diagnose normal attach conflicts.
+
+Prefer first-class lgit introspection such as:
+
+```text
+lgit info
+lgit info --json
+lgit key path
+lgit key status
+lgit key status --json
+lgit remote list
+lgit remote list --json
+lgit attach ... --dry-run
+lgit attach ... --dry-run --json
+```
+
+When adding automation-relevant state, prefer a stable structured output mode instead of requiring agents to scrape human prose.
+
+`lgit git ...` remains an expert/debugging escape hatch. Do not make raw companion Git commands the normal discovery or recovery workflow.
 
 ## CLI behavior principles
 
@@ -308,7 +367,9 @@ For filesystem, path, CRLF, symlink/junction, encryption, or process-performance
 
 When a bug comes from a real user/agent workflow, preserve that shape in a regression test where practical. Examples already include large directory add performance and attach structural blockers.
 
-Temporary migration/profiling workflows or scripts may be useful during development, but **must not remain in the final repository tree**. The normal CI workflow is the persistent workflow.
+**GitHub Actions is validation-only.** Persistent CI workflows must use read-only repository permissions and must never author commits, amend commits, push branches, or rewrite refs. Do not use `github-actions[bot]` as a permanent implementation author/committer. If an automated environment is needed to run formatting, profiling, or platform-specific tests, publish the result as logs/artifacts only; apply the resulting repository changes through a user-attributed commit path and then let CI validate that commit.
+
+Temporary write-capable workflows are not an acceptable implementation mechanism for lgit development. Do not add migration/profiling workflows that commit or push back into the repository, even temporarily.
 
 ## Repository-specific development constraints
 
