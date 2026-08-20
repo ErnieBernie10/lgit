@@ -175,3 +175,18 @@ When an lgit command behaves unexpectedly:
 5. Use `lgit git ...` or inspect internals only after the lgit-facing interfaces are insufficient.
 
 Prefer reporting a reproducible lgit bug over manually modifying companion Git internals.
+
+## Routine synchronization
+
+Prefer the first-class sync workflow over manually sequencing raw Git operations:
+
+```sh
+lgit sync --dry-run
+lgit sync
+lgit sync --push --dry-run
+lgit sync --push
+```
+
+`lgit sync` receives/reconciles committed remote changes and refuses dirty tracked state. `lgit sync --push` treats modifications and deletions of already-tracked logical files as local intent, stages them, creates an `lgit sync` commit when needed, integrates remote history, and pushes the current environment. It does not implicitly add new untracked files.
+
+Use `--dry-run --json` when an agent needs a machine-readable plan. Treat the logical paths in `conflicts` as user-facing conflicts; do not inspect `.lgit/store` or attempt to resolve encrypted physical blobs with raw Git.
